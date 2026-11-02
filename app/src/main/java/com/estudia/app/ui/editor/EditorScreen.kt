@@ -1,0 +1,749 @@
+package com.estudia.app.ui.editor
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.view.ViewGroup
+import android.view.inputmethod.InputMethodManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.FormatAlignLeft
+import androidx.compose.material.icons.automirrored.filled.FormatAlignRight
+import androidx.compose.material.icons.automirrored.filled.FormatIndentDecrease
+import androidx.compose.material.icons.automirrored.filled.FormatIndentIncrease
+import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
+import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.BorderColor
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FontDownload
+import androidx.compose.material.icons.filled.FormatAlignCenter
+import androidx.compose.material.icons.filled.FormatAlignJustify
+import androidx.compose.material.icons.filled.FormatBold
+import androidx.compose.material.icons.filled.FormatClear
+import androidx.compose.material.icons.filled.FormatColorReset
+import androidx.compose.material.icons.filled.FormatColorText
+import androidx.compose.material.icons.filled.FormatItalic
+import androidx.compose.material.icons.filled.FormatListNumbered
+import androidx.compose.material.icons.filled.FormatStrikethrough
+import androidx.compose.material.icons.filled.FormatUnderlined
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconToggleButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.estudia.app.data.ColorKind
+import com.estudia.app.data.DocType
+import com.estudia.app.rich.cssColor
+import com.estudia.app.ui.components.ColorPickerDialog
+import com.estudia.app.ui.components.FastScrollbar
+import com.estudia.app.ui.components.HIGHLIGHT_PRESETS
+import com.estudia.app.ui.components.NameDialog
+import com.estudia.app.ui.components.Swatch
+import com.estudia.app.ui.components.TEXT_PRESETS
+import com.estudia.app.ui.theme.appBarColors
+import com.estudia.app.ui.notes.NOTE_COLORS
+import com.estudia.app.ui.notes.NOTE_ICONS
+import com.estudia.app.ui.notes.NoteLookDialog
+import com.estudia.app.ui.notes.NotePopup
+import com.estudia.app.ui.notes.NotesIndexSheet
+import com.estudia.app.ui.notes.PlacingBanner
+import com.estudia.app.ui.notes.noteTint
+import com.estudia.app.ui.notes.rememberNoteIconUris
+import com.estudia.app.ui.pdf.AddNoteFab
+import com.estudia.app.ui.pdf.NotesIndexButton
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.Json
+import android.graphics.Color as AndroidColor
+import kotlin.math.roundToInt
+import android.graphics.Typeface as AndroidTypeface
+
+/** Familias disponibles en todos los Android (nombre CSS → etiqueta). */
+private val FONTS = listOf(
+    "sans-serif" to "Sans Serif",
+    "serif" to "Serif",
+    "monospace" to "Monoespaciada",
+    "sans-serif-condensed" to "Condensada",
+    "sans-serif-light" to "Ligera",
+    "serif-monospace" to "Máquina de escribir",
+    "casual" to "Casual",
+    "cursive" to "Cursiva",
+)
+
+private val SIZES = listOf(8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48, 72)
+
+/** Envía órdenes al editor web. Los argumentos van como literales JSON para escaparlos bien. */
+internal class WebEditor {
+    var view: WebView? = null
+
+    fun call(function: String, vararg args: Any?) {
+        val params = args.joinToString(",") { arg ->
+            when (arg) {
+                null -> "null"
+                is String -> Json.encodeToString(String.serializer(), arg)
+                else -> arg.toString()
+            }
+        }
+        view?.evaluateJavascript("$function($params)", null)
+    }
+
+    /** Ejecuta JavaScript ya armado (p. ej. con un JSON como argumento). */
+    fun callRaw(js: String) {
+        view?.evaluateJavascript(js, null)
+    }
+
+    /** Guarda lo pendiente y avisa cuando el HTML ya llegó a Kotlin. */
+    fun flush(then: () -> Unit = {}) {
+        val v = view ?: return then()
+        v.evaluateJavascript("window.flushSave && flushSave();1") { then() }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditorScreen(
+    darkTheme: Boolean,
+    onBack: () -> Unit,
+    onOpenStickyNote: (Long) -> Unit,
+    vm: EditorViewModel = viewModel(),
+) {
+    val context = LocalContext.current
+    val doc by vm.document.collectAsState()
+    val content by vm.content.collectAsState()
+    val error by vm.error.collectAsState()
+    val format by vm.state.collectAsState()
+    val recentHighlights by vm.recentHighlights.collectAsState()
+    val recentTextColors by vm.recentTextColors.collectAsState()
+    val notes by vm.notes.collectAsState()
+    val recentNoteColors by vm.recentNoteColors.collectAsState()
+    val editor = remember { WebEditor() }
+
+    // Notas adhesivas
+    val iconUris = rememberNoteIconUris()
+    var webReady by remember { mutableIntStateOf(0) }
+    var placing by rememberSaveable { mutableStateOf(false) }
+    var pendingAnchor by remember { mutableStateOf<String?>(null) }
+    var openNoteId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var indexOpen by remember { mutableStateOf(false) }
+    var docScroll by remember { mutableStateOf(0 to 0) }
+    LaunchedEffect(Unit) { vm.stickyCreated.collect(onOpenStickyNote) }
+    LaunchedEffect(notes, webReady) {
+        if (webReady == 0) return@LaunchedEffect
+        val list = notes.map { n ->
+            val uris = iconUris[n.icon] ?: iconUris.values.first()
+            WebNote(
+                id = n.id.toString(),
+                img = if (noteTint(n.color) == Color.Black) uris.second else uris.first,
+                color = cssColor(n.color),
+                x = n.x, y = n.y, block = n.block, docY = n.docY,
+            )
+        }
+        editor.callRaw("notes.set(${Json.encodeToString(ListSerializer(WebNote.serializer()), list)})")
+    }
+    LaunchedEffect(placing, webReady) {
+        if (webReady > 0) editor.callRaw(if (placing) "notes.startPlacing()" else "notes.cancelPlacing()")
+    }
+
+    // Las notas se abren para escribir; los archivos importados, en modo lectura
+    var editing by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(doc?.type) {
+        val type = doc?.type ?: return@LaunchedEffect
+        if (editing == null) editing = type == DocType.NOTE
+    }
+    // Vista de página (como Word) si el documento trae tamaño de hoja
+    var pageView by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(content != null) {
+        val c = content ?: return@LaunchedEffect
+        if (pageView == null) pageView = c.html.contains("data-w=")
+    }
+    var picker by remember { mutableStateOf<ColorKind?>(null) }
+    var renaming by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+
+    val quickHighlight = recentHighlights.firstOrNull() ?: HIGHLIGHT_PRESETS.first()
+    fun highlight(color: Int?) {
+        editor.call("editor.highlight", color?.let(::cssColor))
+        color?.let { vm.rememberColor(ColorKind.HIGHLIGHT, it) }
+    }
+    fun exit() = editor.flush(onBack)
+
+    BackHandler { if (placing) placing = false else exit() }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) editor.flush()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            editor.flush()
+        }
+    }
+
+    LaunchedEffect(editing) {
+        val e = editing ?: return@LaunchedEffect
+        editor.call("editor.setReadOnly", !e)
+        if (!e) editor.view?.let { v ->
+            (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
+                .hideSoftInputFromWindow(v.windowToken, 0)
+        }
+    }
+    LaunchedEffect(pageView) { pageView?.let { editor.call("editor.setMode", if (it) "page" else "mobile") } }
+    LaunchedEffect(darkTheme) { editor.call("editor.setDark", darkTheme) }
+
+    Scaffold(
+        modifier = Modifier.imePadding(),
+        topBar = {
+            // Herramientas justo debajo de la barra superior
+            Column {
+            TopAppBar(
+                title = {
+                    Text(
+                        doc?.title.orEmpty(),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.clickable { renaming = true },
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = ::exit) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") }
+                },
+                actions = {
+                    NotesIndexButton(notes.size) { indexOpen = true }
+                    IconButton(onClick = { editor.call("editor.undo") }, enabled = format.canUndo) {
+                        Icon(Icons.AutoMirrored.Filled.Undo, "Deshacer")
+                    }
+                    IconButton(onClick = { editor.call("editor.redo") }, enabled = format.canRedo) {
+                        Icon(Icons.AutoMirrored.Filled.Redo, "Rehacer")
+                    }
+                    IconButton(onClick = { editing = editing != true }) {
+                        Icon(
+                            if (editing == true) Icons.AutoMirrored.Filled.MenuBook else Icons.Default.Edit,
+                            contentDescription = if (editing == true) "Modo lectura" else "Editar",
+                        )
+                    }
+                    Box {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(
+                                text = { Text(if (pageView == true) "Vista móvil (ajustar texto)" else "Vista de página") },
+                                onClick = { menu = false; pageView = pageView != true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (doc?.pinned == true) "Quitar de fijados" else "Fijar") },
+                                leadingIcon = {
+                                    Icon(if (doc?.pinned == true) Icons.Outlined.PushPin else Icons.Filled.PushPin, null)
+                                },
+                                onClick = { menu = false; vm.togglePin() },
+                            )
+                            DropdownMenuItem(text = { Text("Renombrar") }, onClick = { menu = false; renaming = true })
+                        }
+                    }
+                },
+                colors = appBarColors(),
+            )
+            when {
+                editing == true -> FormattingToolbar(
+                    format = format,
+                    quickHighlight = quickHighlight,
+                    recentHighlights = recentHighlights,
+                    editor = editor,
+                    onHighlight = ::highlight,
+                    onPick = { picker = it },
+                )
+                format.hasSelection -> HighlightBar(
+                    colors = (recentHighlights + HIGHLIGHT_PRESETS).distinct().take(8),
+                    onHighlight = ::highlight,
+                    onPick = { picker = ColorKind.HIGHLIGHT },
+                    onRemove = { highlight(null) },
+                )
+            }
+            }
+        },
+        floatingActionButton = {
+            if (!placing && content != null && !format.hasSelection) AddNoteFab { placing = true }
+        },
+    ) { padding ->
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            val initial = content
+            when {
+                error != null -> Text(error!!, Modifier.align(Alignment.Center).padding(24.dp))
+                initial == null || editing == null || pageView == null ->
+                    CircularProgressIndicator(Modifier.align(Alignment.Center))
+                else -> {
+                    val startReadOnly = editing != true
+                    val startPaged = pageView == true
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { ctx ->
+                            createEditorWebView(
+                                ctx,
+                                html = initial.html,
+                                baseDir = "file://${initial.baseDir.absolutePath}/",
+                                readOnly = startReadOnly,
+                                paged = startPaged,
+                                dark = darkTheme,
+                                bridge = EditorBridge(
+                                    onSave = vm::save,
+                                    onState = vm::onState,
+                                    onNoteTap = { openNoteId = it },
+                                    onNotePlaced = { placing = false; pendingAnchor = it },
+                                    onNoteMoved = vm::moveStickyNote,
+                                    onScroll = { y, max -> vm.onScroll(y); docScroll = y to max },
+                                ),
+                                initialScroll = vm.scrollY,
+                                onLoaded = { webReady++ },
+                            ).also { editor.view = it }
+                        },
+                        onRelease = { editor.view = null },
+                    )
+                }
+            }
+            val (scrollY, scrollMax) = docScroll
+            if (scrollMax > 0 && content != null) {
+                FastScrollbar(
+                    fraction = scrollY.toFloat() / scrollMax,
+                    onScrollTo = { editor.call("editor.scrollToFraction", it) },
+                    label = { "${(it * 100).roundToInt()} %" },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 8.dp, bottom = 88.dp),
+                )
+            }
+            if (placing) PlacingBanner(onCancel = { placing = false }, modifier = Modifier.align(Alignment.TopCenter))
+        }
+    }
+
+    openNoteId?.let { id ->
+        val note = notes.firstOrNull { it.id == id }
+        if (note == null) {
+            LaunchedEffect(id) { openNoteId = null }
+        } else {
+            NotePopup(
+                note = note,
+                darkTheme = darkTheme,
+                onEdit = { openNoteId = null; editor.flush { onOpenStickyNote(note.id) } },
+                onDelete = { openNoteId = null; vm.deleteStickyNote(note.id) },
+                onClose = { openNoteId = null },
+            )
+        }
+    }
+
+    pendingAnchor?.let { anchor ->
+        NoteLookDialog(
+            title = "Nueva nota",
+            confirmLabel = "Crear",
+            initialIcon = NOTE_ICONS.first().first,
+            initialColor = recentNoteColors.firstOrNull() ?: NOTE_COLORS.first(),
+            recentColors = recentNoteColors,
+            onDismiss = { pendingAnchor = null },
+        ) { icon, noteColor ->
+            pendingAnchor = null
+            // El párrafo recibió su data-anchor: se guarda antes de abrir la nota
+            editor.flush { vm.createStickyNote(anchor, icon, noteColor) }
+        }
+    }
+
+    if (indexOpen) {
+        NotesIndexSheet(
+            notes = notes,
+            isPdf = false,
+            onJump = { indexOpen = false; editor.call("notes.focus", it.id.toString()) },
+            onDismiss = { indexOpen = false },
+        )
+    }
+
+    picker?.let { kind ->
+        FormatColorPicker(
+            kind = kind,
+            format = format,
+            quickHighlight = quickHighlight,
+            recentHighlights = recentHighlights,
+            recentTextColors = recentTextColors,
+            editor = editor,
+            onHighlight = ::highlight,
+            onTextColorUsed = { vm.rememberColor(ColorKind.TEXT, it) },
+            onDismiss = { picker = null },
+        )
+    }
+
+    if (renaming) {
+        NameDialog("Renombrar", doc?.title.orEmpty(), onDismiss = { renaming = false }) {
+            renaming = false
+            vm.rename(it)
+        }
+    }
+}
+
+/** Selector de color para el texto o el resaltado de la selección actual. */
+@Composable
+internal fun FormatColorPicker(
+    kind: ColorKind,
+    format: EditorState,
+    quickHighlight: Int,
+    recentHighlights: List<Int>,
+    recentTextColors: List<Int>,
+    editor: WebEditor,
+    onHighlight: (Int?) -> Unit,
+    onTextColorUsed: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val isHighlight = kind == ColorKind.HIGHLIGHT
+    ColorPickerDialog(
+        title = if (isHighlight) "Color de resaltado" else "Color de texto",
+        initial = (if (isHighlight) parseCssColor(format.back) ?: quickHighlight else parseCssColor(format.color))
+            ?: TEXT_PRESETS[1],
+        recent = if (isHighlight) recentHighlights else recentTextColors,
+        presets = if (isHighlight) HIGHLIGHT_PRESETS else TEXT_PRESETS,
+        onDismiss = onDismiss,
+        onPick = { color ->
+            onDismiss()
+            if (isHighlight) onHighlight(color) else {
+                editor.call("editor.color", cssColor(color))
+                onTextColorUsed(color)
+            }
+        },
+        onClear = {
+            onDismiss()
+            if (isHighlight) onHighlight(null) else editor.call("editor.color", null)
+        },
+    )
+}
+
+/**
+ * Lo que el editor web le avisa a Kotlin. Las llamadas llegan en el hilo del WebView
+ * y se reenvían al hilo principal.
+ */
+internal class EditorBridge(
+    private val onSave: (String) -> Unit,
+    private val onState: (String) -> Unit,
+    private val onNoteTap: (Long) -> Unit = {},
+    private val onNotePlaced: (String) -> Unit = {},
+    private val onNoteMoved: (Long, String) -> Unit = { _, _ -> },
+    private val onScroll: (Int, Int) -> Unit = { _, _ -> },
+) {
+    private val main = Handler(Looper.getMainLooper())
+
+    @JavascriptInterface fun save(html: String) = onSave(html)
+    @JavascriptInterface fun onState(json: String) = onState.invoke(json)
+    @JavascriptInterface fun openNote(id: String) { id.toLongOrNull()?.let { main.post { onNoteTap(it) } } }
+    @JavascriptInterface fun placeNote(anchor: String) { main.post { onNotePlaced(anchor) } }
+    @JavascriptInterface fun moveNote(id: String, anchor: String) { id.toLongOrNull()?.let { main.post { onNoteMoved(it, anchor) } } }
+    @JavascriptInterface fun scrolled(y: Int, max: Int) { main.post { onScroll(y, max) } }
+}
+
+@SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
+internal fun createEditorWebView(
+    context: Context,
+    html: String,
+    baseDir: String,
+    readOnly: Boolean,
+    paged: Boolean,
+    dark: Boolean,
+    bridge: EditorBridge,
+    initialScroll: Int = 0,
+    onLoaded: () -> Unit = {},
+): WebView {
+    val css = context.assets.open("editor/editor.css").bufferedReader().use { it.readText() }
+    val js = context.assets.open("editor/editor.js").bufferedReader().use { it.readText() }
+    val body = if (html.trimStart().startsWith("<article")) html else "<article id=\"page\">$html</article>"
+    val classes = listOfNotNull(if (paged) "paged" else "mobile", if (dark) "dark" else null, if (readOnly) "readonly" else null)
+    val page = """<!DOCTYPE html><html><head><meta charset="utf-8">
+        |<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=0.3, maximum-scale=5">
+        |<style>$css</style></head><body class="${classes.joinToString(" ")}" data-scroll="$initialScroll">
+        |<div id="sheet">$body<div id="notes-layer"></div></div><script>$js</script></body></html>""".trimMargin()
+
+    return WebView(context).apply {
+        layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        setBackgroundColor(AndroidColor.TRANSPARENT)
+        settings.javaScriptEnabled = true
+        // Solo para mostrar las imágenes del documento, guardadas junto al HTML
+        settings.allowFileAccess = true
+        settings.builtInZoomControls = true
+        settings.displayZoomControls = false
+        settings.setSupportZoom(true)
+        webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true
+            override fun onPageFinished(view: WebView, url: String?) = onLoaded()
+        }
+        addJavascriptInterface(bridge, "Android")
+        loadDataWithBaseURL(baseDir, page, "text/html", "utf-8", null)
+    }
+}
+
+/** "rgb(r, g, b)" o "#rrggbb" → ARGB. Null si es transparente o no se reconoce. */
+internal fun parseCssColor(css: String): Int? {
+    val s = css.trim()
+    if (s.startsWith("#") && s.length == 7) return s.substring(1).toLongOrNull(16)?.let { (0xFF000000 or it).toInt() }
+    val m = Regex("""rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)""").find(s) ?: return null
+    if (m.groupValues[4].isNotEmpty() && m.groupValues[4].toFloat() == 0f) return null
+    return AndroidColor.rgb(m.groupValues[1].toInt(), m.groupValues[2].toInt(), m.groupValues[3].toInt())
+}
+
+@Composable
+internal fun FormattingToolbar(
+    format: EditorState,
+    quickHighlight: Int,
+    recentHighlights: List<Int>,
+    editor: WebEditor,
+    onHighlight: (Int?) -> Unit,
+    onPick: (ColorKind) -> Unit,
+    onInsertImage: (() -> Unit)? = null,
+) {
+    Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
+        Column {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (onInsertImage != null) {
+                    IconButton(onClick = onInsertImage) { Icon(Icons.Default.AddPhotoAlternate, "Insertar imagen") }
+                    ToolbarDivider()
+                }
+                BlockMenu(format.block) { editor.call("editor.block", it) }
+                FontMenu(format.font) { editor.call("editor.cmd", "fontName", it) }
+                SizeMenu(format.size) { editor.call("editor.fontSize", it) }
+                ToolbarDivider()
+
+                StyleToggle(Icons.Default.FormatBold, "Negrita", format.bold) { editor.call("editor.cmd", "bold") }
+                StyleToggle(Icons.Default.FormatItalic, "Cursiva", format.italic) { editor.call("editor.cmd", "italic") }
+                StyleToggle(Icons.Default.FormatUnderlined, "Subrayado", format.underline) { editor.call("editor.cmd", "underline") }
+                StyleToggle(Icons.Default.FormatStrikethrough, "Tachado", format.strike) { editor.call("editor.cmd", "strikeThrough") }
+                ToolbarDivider()
+
+                // Color de texto: barra inferior con el color actual
+                IconButton(onClick = { onPick(ColorKind.TEXT) }) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.FormatColorText, "Color de texto")
+                        Box(
+                            Modifier
+                                .width(20.dp)
+                                .height(4.dp)
+                                .background(parseCssColor(format.color)?.let(::Color) ?: MaterialTheme.colorScheme.onSurface)
+                        )
+                    }
+                }
+                // Resaltado: el marcador aplica el último color usado; la paleta abre el selector
+                IconButton(onClick = { onHighlight(quickHighlight) }) {
+                    Icon(Icons.Default.BorderColor, "Resaltar", tint = Color(quickHighlight))
+                }
+                IconButton(onClick = { onPick(ColorKind.HIGHLIGHT) }) {
+                    Icon(Icons.Default.Palette, "Elegir color de resaltado")
+                }
+                recentHighlights.drop(1).take(5).forEach { color ->
+                    Box(Modifier.padding(horizontal = 4.dp)) {
+                        Swatch(color, selected = parseCssColor(format.back) == color, size = 26) { onHighlight(color) }
+                    }
+                }
+                IconButton(onClick = { onHighlight(null) }) {
+                    Icon(Icons.Default.FormatColorReset, "Quitar resaltado")
+                }
+                ToolbarDivider()
+
+                StyleToggle(Icons.AutoMirrored.Filled.FormatAlignLeft, "Alinear a la izquierda", format.align == "left") {
+                    editor.call("editor.cmd", "justifyLeft")
+                }
+                StyleToggle(Icons.Default.FormatAlignCenter, "Centrar", format.align == "center") {
+                    editor.call("editor.cmd", "justifyCenter")
+                }
+                StyleToggle(Icons.AutoMirrored.Filled.FormatAlignRight, "Alinear a la derecha", format.align == "right") {
+                    editor.call("editor.cmd", "justifyRight")
+                }
+                StyleToggle(Icons.Default.FormatAlignJustify, "Justificar", format.align == "justify") {
+                    editor.call("editor.cmd", "justifyFull")
+                }
+                ToolbarDivider()
+                StyleToggle(Icons.AutoMirrored.Filled.FormatListBulleted, "Viñetas", format.ul) {
+                    editor.call("editor.cmd", "insertUnorderedList")
+                }
+                StyleToggle(Icons.Default.FormatListNumbered, "Numeración", format.ol) {
+                    editor.call("editor.cmd", "insertOrderedList")
+                }
+                IconButton(onClick = { editor.call("editor.cmd", "outdent") }) {
+                    Icon(Icons.AutoMirrored.Filled.FormatIndentDecrease, "Reducir sangría")
+                }
+                IconButton(onClick = { editor.call("editor.cmd", "indent") }) {
+                    Icon(Icons.AutoMirrored.Filled.FormatIndentIncrease, "Aumentar sangría")
+                }
+                ToolbarDivider()
+                IconButton(onClick = { editor.call("editor.clear") }) {
+                    Icon(Icons.Default.FormatClear, "Quitar formato")
+                }
+            }
+        }
+    }
+}
+
+/** En modo lectura, al seleccionar texto aparece esta barra para resaltar rápido. */
+@Composable
+internal fun HighlightBar(colors: List<Int>, onHighlight: (Int?) -> Unit, onPick: () -> Unit, onRemove: () -> Unit) {
+    Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(Icons.Default.BorderColor, null, tint = MaterialTheme.colorScheme.primary)
+            colors.forEach { Swatch(it, selected = false, size = 30) { onHighlight(it) } }
+            IconButton(onClick = onPick) { Icon(Icons.Default.Palette, "Elegir color") }
+            IconButton(onClick = onRemove) { Icon(Icons.Default.FormatColorReset, "Quitar resaltado") }
+        }
+    }
+}
+
+@Composable
+private fun StyleToggle(icon: ImageVector, label: String, checked: Boolean, onClick: () -> Unit) {
+    IconToggleButton(checked = checked, onCheckedChange = { onClick() }) {
+        Box(
+            Modifier
+                .size(36.dp)
+                .background(
+                    if (checked) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                    RoundedCornerShape(8.dp),
+                ),
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, label) }
+    }
+}
+
+@Composable
+private fun ToolbarDivider() {
+    VerticalDivider(Modifier.height(28.dp).padding(horizontal = 4.dp))
+}
+
+@Composable
+private fun BlockMenu(block: String, onSelect: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val label = when (block) {
+        "h1" -> "Título 1"; "h2" -> "Título 2"; "h3" -> "Título 3"; else -> "Normal"
+    }
+    Box {
+        TextButton(onClick = { open = true }) { Text(label) }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            listOf("p" to "Texto normal", "h1" to "Título 1", "h2" to "Título 2", "h3" to "Título 3").forEach { (tag, text) ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text,
+                            fontSize = when (tag) { "h1" -> 24.sp; "h2" -> 20.sp; "h3" -> 18.sp; else -> 16.sp },
+                            fontWeight = if (tag != "p") FontWeight.Bold else FontWeight.Normal,
+                        )
+                    },
+                    onClick = { open = false; onSelect(tag) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FontMenu(current: String, onSelect: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val currentName = current.substringBefore(',').trim().trim('"', '\'')
+    Box {
+        IconButton(onClick = { open = true }) { Icon(Icons.Default.FontDownload, "Tipo de fuente") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            FONTS.forEach { (family, label) ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            label,
+                            fontFamily = FontFamily(AndroidTypeface.create(family, AndroidTypeface.NORMAL)),
+                            fontWeight = if (family == currentName) FontWeight.Bold else null,
+                        )
+                    },
+                    onClick = { open = false; onSelect(family) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SizeMenu(current: Float, onSelect: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val label = if (current % 1f == 0f) current.toInt().toString() else current.toString()
+    Box {
+        TextButton(onClick = { open = true }) { Text("$label pt") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            SIZES.forEach { size ->
+                DropdownMenuItem(
+                    text = { Text("$size", fontWeight = if (size.toFloat() == current) FontWeight.Bold else null) },
+                    onClick = { open = false; onSelect(size) },
+                )
+            }
+        }
+    }
+}
