@@ -19,6 +19,20 @@ import androidx.core.content.FileProvider
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.FormatPaint
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FindReplace
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Numbers
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.text.input.ImeAction
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.FormatLineSpacing
 import androidx.compose.material.icons.filled.VerticalAlignBottom
@@ -195,6 +209,13 @@ internal class WebEditor {
         view?.evaluateJavascript(js, null)
     }
 
+    /** Evalúa una expresión que devuelve texto y entrega ese texto (sin las comillas de JSON). */
+    fun eval(js: String, onResult: (String) -> Unit) {
+        view?.evaluateJavascript(js) { raw ->
+            onResult(runCatching { Json.decodeFromString(String.serializer(), raw) }.getOrDefault(""))
+        }
+    }
+
     /** Guarda lo pendiente y avisa cuando el HTML ya llegó a Kotlin. */
     fun flush(then: () -> Unit = {}) {
         val v = view ?: return then()
@@ -262,6 +283,14 @@ fun EditorScreen(
     var picker by remember { mutableStateOf<ColorKind?>(null) }
     var renaming by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+
+    // Revisar: buscar y reemplazar, contar palabras
+    var finding by rememberSaveable { mutableStateOf(false) }
+    var found by remember { mutableStateOf(0 to 0) }
+    var stats by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(editing) { if (editing != true && finding) { finding = false; editor.call("finder.clear") } }
+    stats?.let { raw -> WordCountDialog(raw) { stats = null } }
 
     // Guardar / compartir como Word: primero se vacía lo pendiente del editor
     val snackbar = remember { SnackbarHostState() }
@@ -395,12 +424,29 @@ fun EditorScreen(
                     onInsertImage = {
                         gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     },
+                    onFind = { finding = true },
+                    onStats = { editor.eval("docStats()") { stats = it } },
                 )
                 format.hasSelection -> HighlightBar(
                     colors = (recentHighlights + HIGHLIGHT_PRESETS).distinct().take(8),
                     onHighlight = ::highlight,
                     onPick = { picker = ColorKind.HIGHLIGHT },
                     onRemove = { highlight(null) },
+                )
+            }
+            if (finding && editing == true) {
+                FindBar(
+                    found = found,
+                    onSearch = { editor.call("finder.search", it) },
+                    onNext = { editor.call("finder.next") },
+                    onPrev = { editor.call("finder.prev") },
+                    onReplace = { editor.call("finder.replace", it) },
+                    onReplaceAll = { text ->
+                        editor.eval("String(finder.replaceAll(${Json.encodeToString(String.serializer(), text)}))") { n ->
+                            scope.launch { snackbar.showSnackbar(if (n == "1") "1 reemplazo" else "$n reemplazos") }
+                        }
+                    },
+                    onClose = { finding = false; found = 0 to 0; editor.call("finder.clear") },
                 )
             }
             }
@@ -436,6 +482,7 @@ fun EditorScreen(
                                     onNoteMoved = vm::moveStickyNote,
                                     onScroll = { y, max -> vm.onScroll(y); docScroll = y to max },
                                     onModel = vm::saveModel,
+                                    onFound = { cur, total -> found = cur to total },
                                 ),
                                 initialScroll = vm.scrollY,
                                 onLoaded = { webReady++ },
@@ -568,12 +615,15 @@ internal class EditorBridge(
     private val onNoteMoved: (Long, String) -> Unit = { _, _ -> },
     private val onScroll: (Int, Int) -> Unit = { _, _ -> },
     private val onModel: (String) -> Unit = {},
+    private val onFound: (Int, Int) -> Unit = { _, _ -> },
 ) {
     private val main = Handler(Looper.getMainLooper())
 
     @JavascriptInterface fun save(html: String) = onSave(html)
     /** Qué cambió respecto al Word original, para poder guardarlo como .docx. */
     @JavascriptInterface fun model(json: String) = onModel(json)
+    /** Resultado de Buscar: coincidencia actual (desde 1) y total. */
+    @JavascriptInterface fun found(current: Int, total: Int) { main.post { onFound(current, total) } }
     @JavascriptInterface fun onState(json: String) = onState.invoke(json)
     @JavascriptInterface fun openNote(id: String) { id.toLongOrNull()?.let { main.post { onNoteTap(it) } } }
     @JavascriptInterface fun placeNote(anchor: String) { main.post { onNotePlaced(anchor) } }
@@ -638,10 +688,12 @@ internal fun FormattingToolbar(
     onHighlight: (Int?) -> Unit,
     onPick: (ColorKind) -> Unit,
     onInsertImage: (() -> Unit)? = null,
+    onFind: (() -> Unit)? = null,
+    onStats: (() -> Unit)? = null,
 ) {
     // Cinta como la de Word: pestañas arriba y sus herramientas debajo
     var tab by rememberSaveable { mutableStateOf(RibbonTab.HOME) }
-    val tabs = RibbonTab.entries
+    val tabs = RibbonTab.entries.filter { it != RibbonTab.REVIEW || onFind != null || onStats != null }
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Column {
             Row(
@@ -664,6 +716,10 @@ internal fun FormattingToolbar(
                     RibbonTab.HOME -> HomeTools(format, quickHighlight, recentHighlights, editor, onHighlight, onPick)
                     RibbonTab.INSERT -> InsertTools(editor, onInsertImage)
                     RibbonTab.PARAGRAPH -> ParagraphTools(format, editor)
+                    RibbonTab.REVIEW -> {
+                        onFind?.let { RibbonButton(Icons.Default.FindReplace, "Buscar y reemplazar", it) }
+                        onStats?.let { RibbonButton(Icons.Default.Numbers, "Contar palabras", it) }
+                    }
                 }
             }
         }
@@ -674,6 +730,90 @@ private enum class RibbonTab(val label: String) {
     HOME("Inicio"),
     INSERT("Insertar"),
     PARAGRAPH("Párrafo"),
+    REVIEW("Revisar"),
+}
+
+/** Barra de Buscar y reemplazar, bajo la cinta. */
+@Composable
+private fun FindBar(
+    found: Pair<Int, Int>,
+    onSearch: (String) -> Unit,
+    onNext: () -> Unit,
+    onPrev: () -> Unit,
+    onReplace: (String) -> Unit,
+    onReplaceAll: (String) -> Unit,
+    onClose: () -> Unit,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    var replacement by rememberSaveable { mutableStateOf("") }
+    var replacing by rememberSaveable { mutableStateOf(false) }
+    // Busca mientras se escribe, con una pequeña pausa
+    LaunchedEffect(query) {
+        delay(250)
+        onSearch(query)
+    }
+    Surface(tonalElevation = 2.dp) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("Buscar") },
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Default.Search, null) },
+                    suffix = { if (query.isNotEmpty()) Text("${found.first}/${found.second}") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { onNext() }),
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onPrev, enabled = found.second > 0) { Icon(Icons.Default.KeyboardArrowUp, "Anterior") }
+                IconButton(onClick = onNext, enabled = found.second > 0) { Icon(Icons.Default.KeyboardArrowDown, "Siguiente") }
+                IconToggleButton(checked = replacing, onCheckedChange = { replacing = it }) {
+                    Icon(Icons.Default.FindReplace, "Reemplazar")
+                }
+                IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Cerrar búsqueda") }
+            }
+            if (replacing) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = replacement,
+                        onValueChange = { replacement = it },
+                        placeholder = { Text("Reemplazar por") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { onReplace(replacement) }, enabled = found.second > 0) { Text("Reemplazar") }
+                    TextButton(onClick = { onReplaceAll(replacement) }, enabled = found.second > 0) { Text("Todo") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WordCountDialog(raw: String, onDismiss: () -> Unit) {
+    val stats = remember(raw) { runCatching { Json.parseToJsonElement(raw).jsonObject }.getOrNull() }
+    fun value(key: String) = stats?.get(key)?.jsonPrimitive?.intOrNull ?: 0
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Contar palabras") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    "Palabras" to value("words"),
+                    "Caracteres (sin espacios)" to value("charsNoSpaces"),
+                    "Caracteres (con espacios)" to value("chars"),
+                    "Párrafos" to value("paragraphs"),
+                ).forEach { (label, n) ->
+                    Row {
+                        Text(label, Modifier.weight(1f))
+                        Text("%,d".format(Locale.forLanguageTag("es"), n), fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
+    )
 }
 
 @Composable

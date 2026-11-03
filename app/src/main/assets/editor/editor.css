@@ -38,6 +38,8 @@ body {
 #page .wm { display: inline; }
 #page .wpb { display: block; height: 0; border-top: 1px dashed #c9a9b6; margin: 6pt 0; }
 #page .fn-area { margin-top: 18pt; }
+::highlight(find) { background-color: rgba(255, 196, 0, 0.45); }
+::highlight(find-current) { background-color: #ff9100; color: #000; }
 #page blockquote { margin: 6pt 0 6pt 24pt; padding-left: 10pt; border-left: 3px solid #d7a3b8; font-style: italic; }
 #page pre { font-family: 'Courier New', monospace; background: rgba(210, 93, 140, 0.08); padding: 6pt 8pt; border-radius: 4px; margin: 6pt 0; }
 #page hr.wrule { border: 0; border-top: 0.75pt solid currentColor; margin: 6pt 0; }

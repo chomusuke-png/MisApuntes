@@ -117,6 +117,8 @@
   function save() {
     clearTimeout(saveTimer);
     saveTimer = null;
+    // Las marcas de cambio tienen que quedar también en el HTML guardado
+    if (observer) markChanges(observer.takeRecords());
     const html = getHtml();
     if (html === lastSaved) return;
     lastSaved = html;
@@ -138,7 +140,7 @@
     }
   }
 
-  const observer = typeof MutationObserver === 'undefined' ? null : new MutationObserver(function (records) {
+  function markChanges(records) {
     records.forEach(function (r) {
       if (r.type === 'attributes' && (r.attributeName === 'data-d' || r.attributeName === 'data-anchor')) return;
       if (r.target === page) {
@@ -147,7 +149,8 @@
       }
       markDirty(r.target);
     });
-  });
+  }
+  const observer = typeof MutationObserver === 'undefined' ? null : new MutationObserver(markChanges);
   if (observer) observer.observe(page, { subtree: true, childList: true, characterData: true, attributes: true });
 
   function hexColor(c) {
@@ -410,6 +413,8 @@
   }
 
   function model() {
+    // Cambios recién hechos que el observador aún no procesó (se guardó en el mismo instante)
+    if (observer) markChanges(observer.takeRecords());
     const counts = {};
     page.querySelectorAll('[data-b]').forEach(function (el) { counts[el.dataset.b] = (counts[el.dataset.b] || 0) + 1; });
     listCount = 0;
@@ -550,6 +555,151 @@
     }
     afterCommand();
   }
+
+  // ---------- Buscar y reemplazar ----------
+
+  let found = [];
+  let foundIndex = -1;
+  let foundQuery = '';
+  const canHighlight = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight === 'function';
+
+  /** Texto visible del documento (sin números de lista, texto oculto ni notas al pie). */
+  function textNodes() {
+    const out = [];
+    const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        const el = n.parentNode;
+        return el && el.closest('.wl, .wh, [data-x]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    let n;
+    while ((n = walker.nextNode())) out.push(n);
+    return out;
+  }
+
+  function fold(s) {
+    return s.toLocaleLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  }
+
+  /** Busca sin distinguir mayúsculas ni tildes; las coincidencias pueden cruzar varios trozos. */
+  function search(query) {
+    foundQuery = query || '';
+    found = [];
+    if (foundQuery) {
+      const nodes = textNodes();
+      let text = '';
+      const starts = [];
+      nodes.forEach(function (n) {
+        starts.push(text.length);
+        // Se pliega letra por letra para que las posiciones sigan coincidiendo con el original
+        text += Array.from(n.nodeValue).map(function (c) { const f = fold(c); return f.length === c.length ? f : c; }).join('');
+      });
+      const q = fold(foundQuery);
+      function locate(pos) {
+        let lo = 0, hi = nodes.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (starts[mid] <= pos) lo = mid; else hi = mid - 1;
+        }
+        return [nodes[lo], pos - starts[lo]];
+      }
+      for (let i = text.indexOf(q); i >= 0 && found.length < 5000; i = text.indexOf(q, i + q.length)) {
+        const a = locate(i), b = locate(i + q.length - 1);
+        const r = document.createRange();
+        r.setStart(a[0], a[1]);
+        r.setEnd(b[0], b[1] + 1);
+        found.push(r);
+      }
+    }
+    if (foundIndex >= found.length) foundIndex = found.length - 1;
+    if (foundIndex < 0 && found.length) foundIndex = 0;
+    paintFound();
+  }
+
+  function paintFound() {
+    if (canHighlight) {
+      CSS.highlights.set('find', new Highlight(...found));
+      if (foundIndex >= 0 && found[foundIndex]) CSS.highlights.set('find-current', new Highlight(found[foundIndex]));
+      else CSS.highlights.delete('find-current');
+    }
+    if (typeof Android.found === 'function') Android.found(found.length ? foundIndex + 1 : 0, found.length);
+  }
+
+  function showFound() {
+    const r = found[foundIndex];
+    if (!r) return;
+    const box = r.getBoundingClientRect();
+    if (box.top < 80 || box.bottom > window.innerHeight - 80) {
+      window.scrollBy({ top: box.top - window.innerHeight / 3, behavior: 'smooth' });
+    }
+    if (!canHighlight) {
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r.cloneRange());
+    }
+  }
+
+  function step(dir) {
+    if (!found.length) return;
+    foundIndex = (foundIndex + dir + found.length) % found.length;
+    paintFound();
+    showFound();
+  }
+
+  function replaceRange(r, text) {
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+    savedRange = r.cloneRange();
+    if (text) document.execCommand('insertText', false, text);
+    else document.execCommand('delete');
+  }
+
+  window.finder = {
+    search: function (q) { foundIndex = 0; search(q); showFound(); },
+    next: function () { step(1); },
+    prev: function () { step(-1); },
+    replace: function (text) {
+      if (readOnly || !found[foundIndex]) return;
+      if (typingTimer) snapshot();
+      replaceRange(found[foundIndex], text);
+      afterCommand();
+      search(foundQuery);
+      showFound();
+    },
+    replaceAll: function (text) {
+      if (readOnly || !found.length) return 0;
+      if (typingTimer) snapshot();
+      const n = found.length;
+      // De atrás hacia adelante: cada reemplazo no corre las posiciones de los anteriores
+      for (let i = found.length - 1; i >= 0; i--) replaceRange(found[i], text);
+      afterCommand();
+      search(foundQuery);
+      return n;
+    },
+    clear: function () {
+      found = [];
+      foundIndex = -1;
+      foundQuery = '';
+      if (canHighlight) { CSS.highlights.delete('find'); CSS.highlights.delete('find-current'); }
+    }
+  };
+
+  /** Palabras, caracteres y párrafos del documento. */
+  window.docStats = function () {
+    const text = textNodes().map(function (n) { return n.nodeValue; }).join(' ');
+    const words = text.split(/\s+/).filter(function (w) { return /[\p{L}\p{N}]/u.test(w); }).length;
+    const visible = textNodes().map(function (n) { return n.nodeValue; }).join('');
+    const paragraphs = Array.prototype.filter.call(page.querySelectorAll(LEAF_BLOCKS), function (el) {
+      return !el.closest('[data-x]') && el.textContent.trim().length > 0;
+    }).length;
+    return JSON.stringify({
+      words: words,
+      chars: visible.length,
+      charsNoSpaces: visible.replace(/\s/g, '').length,
+      paragraphs: paragraphs
+    });
+  };
 
   // ---------- Copiar formato (brocha) ----------
 
