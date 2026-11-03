@@ -91,3 +91,30 @@ fn blank_document_from_model() {
     assert_eq!(blue.font.as_deref(), Some("Georgia"));
     assert_eq!(blue.size, Some(14.0));
 }
+
+#[test]
+fn new_table_link_and_rule() {
+    let dir = tmp("insert");
+    let out = dir.join("out.docx");
+    let model = r##"{"blocks":[
+        {"p":{"tag":"p","segs":[{"t":"ver ","f":{}},{"t":"sitio","f":{"link":"https://example.com"}}]}},
+        {"t":{"src":null,"cells":[
+            {"c":"0:0","blocks":[{"p":{"tag":"p","segs":[{"t":"A1"}]}}]},
+            {"c":"0:1","blocks":[{"p":{"tag":"p","segs":[{"t":"B1"}]}}]},
+            {"c":"1:0","blocks":[]},
+            {"c":"1:1","blocks":[{"p":{"tag":"p","segs":[{"t":"B2"}]}}]}]}},
+        {"p":{"tag":"p","rule":true,"segs":[]}}
+    ]}"##;
+    wordbridge::to_docx("", "", model, dir.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+    let doc = wordbridge::open(out.to_str().unwrap(), "docx").unwrap();
+    let p = doc.body[0].as_para().unwrap();
+    assert_eq!(p.run_ranges().nth(1).unwrap().1.link.as_deref(), Some("https://example.com"));
+    let t = doc.body[1].as_table().unwrap();
+    assert_eq!((t.rows.len(), t.rows[0].cells.len()), (2, 2));
+    assert_eq!(t.rows[1].cells[1].blocks[0].as_para().unwrap().plain_text(), "B2");
+    let rule = doc.body[2].as_para().unwrap();
+    assert!(rule.props.borders.as_ref().and_then(|b| b.bottom.as_ref()).is_some());
+    let html = wordbridge::to_html(out.to_str().unwrap(), "docx", dir.to_str().unwrap()).unwrap();
+    assert!(html.contains("<a href=\"https://example.com\">sitio</a>"));
+    assert!(html.contains("border-bottom:"));
+}

@@ -56,6 +56,10 @@ val buildRust by tasks.registering(Exec::class) {
     inputs.files(crate.resolve("Cargo.toml"), crate.resolve("Cargo.lock"))
     outputs.dir(rustJniLibs)
     environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+    // Fuera de OneDrive/Dropbox: la sincronización deja archivos a medias y rompe la compilación
+    System.getenv("LOCALAPPDATA")?.let { environment("CARGO_TARGET_DIR", "$it/MisApuntes/cargo-target") }
+    // Pocas tareas a la vez: con poca RAM, muchos rustc en paralelo fallan al reservar memoria
+    environment("CARGO_BUILD_JOBS", "2")
     commandLine(
         "cargo", "ndk", "-t", "arm64-v8a", "--platform", "26",
         "-o", rustJniLibs.get().asFile.absolutePath, "build", "--release",

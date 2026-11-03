@@ -214,6 +214,7 @@
         if (sz === null && tag === 'FONT' && n.getAttribute('size')) sz = FONT_SIZES[parseInt(n.getAttribute('size'), 10)] || null;
         if (sz !== null) f.sz = Math.round(sz * 2) / 2;
       }
+      if (f.link === undefined && tag === 'A') f.link = n.getAttribute('href') || '';
     }
     if (withBlock && fromWord) {
       // Del párrafo de Word se conoce todo su aspecto: lo no declarado es "sin"
@@ -224,6 +225,7 @@
       if (f.va === undefined) f.va = '';
       if (f.c === undefined) f.c = '';
       if (f.bg === undefined) f.bg = '';
+      if (f.link === undefined) f.link = '';
     }
     return f;
   }
@@ -316,13 +318,21 @@
       const tag = n.tagName;
       const b = n.dataset.b;
       if (b && !n.hasAttribute('data-d') && counts[b] === 1) { out.push({ k: b }); continue; }
-      if (tag === 'HR') { out.push({ p: { tag: 'p', segs: [{ pb: 1 }] } }); continue; }
+      if (tag === 'HR') {
+        // Línea horizontal insertada; las demás <hr> son saltos de página de la versión anterior
+        out.push({ p: n.classList.contains('wrule') ? { tag: 'p', rule: true, segs: [] } : { tag: 'p', segs: [{ pb: 1 }] } });
+        continue;
+      }
       if (tag === 'TABLE') {
+        // Las celdas de Word traen su posición (data-c); las de tablas nuevas, la de la cuadrícula
         const cells = [];
-        n.querySelectorAll(':scope > tbody > tr > td, :scope > tr > td, :scope > thead > tr > td, :scope > tbody > tr > th').forEach(function (td) {
-          const inner = [];
-          blocksOf(td, counts, inner);
-          cells.push({ c: td.dataset.c || '', blocks: inner });
+        Array.prototype.forEach.call(n.rows, function (tr, r) {
+          if (tr.closest('table') !== n) return;
+          Array.prototype.forEach.call(tr.cells, function (td, c) {
+            const inner = [];
+            blocksOf(td, counts, inner);
+            cells.push({ c: td.dataset.c || (r + ':' + c), blocks: inner });
+          });
         });
         out.push({ t: { src: b || null, cells: cells } });
         continue;
@@ -895,6 +905,45 @@
     },
     insertImage: function (src) {
       exec('insertHTML', '<img src="' + String(src).replace(/[&"<>]/g, '') + '"><br>');
+      afterCommand();
+    },
+    insertTable: function (rows, cols) {
+      rows = Math.max(1, Math.min(50, rows | 0));
+      cols = Math.max(1, Math.min(12, cols | 0));
+      let html = '<table class="doc" style="width:100%"><tbody>';
+      for (let r = 0; r < rows; r++) {
+        html += '<tr>';
+        for (let c = 0; c < cols; c++) html += '<td><p><br></p></td>';
+        html += '</tr>';
+      }
+      exec('insertHTML', html + '</tbody></table><p><br></p>');
+      afterCommand();
+    },
+    insertLink: function (url, text) {
+      url = String(url || '').trim();
+      if (!/^(https?:|mailto:)/i.test(url)) url = 'https://' + url;
+      restoreRange();
+      const sel = window.getSelection();
+      if (sel.rangeCount && !sel.isCollapsed && !text) {
+        exec('createLink', url);
+      } else {
+        const a = document.createElement('a');
+        a.href = url;
+        a.textContent = text || url;
+        exec('insertHTML', a.outerHTML);
+      }
+      afterCommand();
+    },
+    insertPageBreak: function () {
+      exec('insertHTML', '<span class="wpb" data-pb="1" contenteditable="false"></span>');
+      afterCommand();
+    },
+    insertRule: function () {
+      exec('insertHTML', '<hr class="wrule"><p><br></p>');
+      afterCommand();
+    },
+    insertText: function (text) {
+      exec('insertText', String(text));
       afterCommand();
     },
     changeCase: changeCase,

@@ -32,6 +32,8 @@ pub struct Look {
     pub color: String,
     /// "#RRGGBB" o "" (sin fondo).
     pub bg: String,
+    /// Destino del enlace ("" = sin enlace).
+    pub link: String,
 }
 
 impl Look {
@@ -53,6 +55,7 @@ impl Look {
                 TextColor::Auto => String::new(),
             },
             bg: c.highlight.or(c.shading).map(hex).unwrap_or_default(),
+            link: c.link.clone().filter(|l| crate::rebuild::safe_link(l)).unwrap_or_default(),
         }
     }
 }
@@ -224,7 +227,11 @@ impl<'a> Renderer<'a> {
         if !css.is_empty() {
             let _ = write!(out, " style=\"{css}\"");
         }
-        let _ = write!(out, ">{html}</span>");
+        if look.link.is_empty() {
+            let _ = write!(out, ">{html}</span>");
+        } else {
+            let _ = write!(out, "><a href=\"{}\">{html}</a></span>", esc(&look.link));
+        }
     }
 
     fn object(&mut self, o: &InlineObject, oref: &str, out: &mut String) {
@@ -473,6 +480,10 @@ fn para_css(rp: &ResolvedPara, out: &mut String) {
             let _ = write!(out, "line-height:{}pt;", num(pt));
         }
         _ => {}
+    }
+    if let Some(b) = rp.borders.as_ref().and_then(|b| b.bottom.as_ref()).filter(|b| b.is_visible()) {
+        let color = b.color.map(hex).unwrap_or_else(|| "#000".into());
+        let _ = write!(out, "border-bottom:{}pt solid {color};padding-bottom:{}pt;", num(b.width.max(0.5)), num(b.space));
     }
     // Como imagen y no como background-color: así no se confunde con el resaltado del texto
     if let Some(bg) = rp.shading {

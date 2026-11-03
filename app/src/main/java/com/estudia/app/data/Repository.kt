@@ -347,9 +347,15 @@ class Repository(private val context: Context, private val db: AppDatabase) {
     }
 
     /** Copia una imagen a la carpeta de la nota, reducida a 1600 px como máximo. Devuelve su nombre. */
-    suspend fun importNoteImage(noteId: Long, source: Uri): String = withContext(Dispatchers.IO) {
+    suspend fun importNoteImage(noteId: Long, source: Uri): String = importImage(noteDir(noteId), source)
+
+    /** Imagen para un documento: queda junto a su HTML, de donde también la toma el guardado en Word. */
+    suspend fun importDocumentImage(docId: Long, source: Uri): String = importImage(contentDir(docId), source)
+
+    /** Copia la imagen achicada (máx. 1600 px) y derecha en [dir]; devuelve el nombre del archivo. */
+    private suspend fun importImage(dir: File, source: Uri): String = withContext(Dispatchers.IO) {
         val name = "img-${UUID.randomUUID().toString().take(8)}.jpg"
-        val target = File(noteDir(noteId).apply { mkdirs() }, name)
+        val target = File(dir.apply { mkdirs() }, name)
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.contentResolver.openInputStream(source)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         var sample = 1

@@ -12,9 +12,9 @@ use std::sync::Arc;
 use serde::Deserialize;
 use wordcraft_doc::numbering::ListKind;
 use wordcraft_doc::para::{Float, InlineObject};
-use wordcraft_doc::props::{Highlight, NumRef, Underline, VertAlign};
+use wordcraft_doc::props::{Border, Borders, Highlight, NumRef, Underline, VertAlign};
 use wordcraft_doc::styles::StyleSheet;
-use wordcraft_doc::{Align, Block, Blocks, CharProps, Document, Paragraph, Rgb, TextColor};
+use wordcraft_doc::{Align, Block, Blocks, CharProps, Document, Paragraph, Rgb, Table, TextColor};
 
 use crate::render::{Look, heading_level, image_ext, para_style};
 
@@ -46,6 +46,9 @@ pub struct MPara {
     #[serde(default)]
     pub level: u8,
     pub align: Option<String>,
+    /// Línea horizontal insertada en el editor: párrafo vacío con borde inferior.
+    #[serde(default)]
+    pub rule: bool,
     #[serde(default)]
     pub segs: Vec<Seg>,
 }
@@ -84,6 +87,8 @@ pub struct Fmt {
     pub bg: Option<String>,
     pub font: Option<String>,
     pub sz: Option<f32>,
+    /// Destino del enlace ("" = sin enlace).
+    pub link: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -164,10 +169,10 @@ fn build_blocks(ctx: &mut Ctx, doc: &mut Document, blocks: &[MBlock]) -> Blocks 
                         }
                         out.push(Arc::new(Block::Table(t)));
                     }
-                    // Tabla pegada desde otro lado: su texto pasa a párrafos
+                    // Tabla nueva (insertada en el editor o pegada)
                     _ => {
-                        for mc in &mt.cells {
-                            out.extend(build_blocks(ctx, doc, &mc.blocks));
+                        if let Some(t) = new_table(ctx, doc, mt) {
+                            out.push(Arc::new(Block::Table(t)));
                         }
                     }
                 }
@@ -175,6 +180,39 @@ fn build_blocks(ctx: &mut Ctx, doc: &mut Document, blocks: &[MBlock]) -> Blocks 
         }
     }
     out
+}
+
+/// Tabla con bordes simples (estilo "Tabla con cuadrícula") del ancho del texto de la hoja.
+fn new_table(ctx: &mut Ctx, doc: &mut Document, mt: &MTable) -> Option<Table> {
+    let cells: Vec<(usize, usize, &MCell)> = mt
+        .cells
+        .iter()
+        .filter_map(|mc| {
+            let (r, c) = mc.c.split_once(':')?;
+            Some((r.parse().ok()?, c.parse().ok()?, mc))
+        })
+        .collect();
+    let rows = cells.iter().map(|(r, _, _)| r + 1).max()?;
+    let cols = cells.iter().map(|(_, c, _)| c + 1).max()?;
+    let s = &doc.last_section;
+    let width = (s.page_w - s.margin_left - s.margin_right).max(72.0);
+    let mut t = Table::new(rows, cols, width);
+    if doc.styles.get("TableGrid").is_none() {
+        if let Some(st) = StyleSheet::builtin().get("TableGrid").cloned() {
+            doc.styles.upsert(st);
+        }
+    }
+    t.props.borders = Some(Borders::all(Border::single(0.5)));
+    for (r, c, mc) in cells {
+        let mut blocks = build_blocks(ctx, doc, &mc.blocks);
+        if blocks.is_empty() {
+            blocks.push(Arc::new(Block::Para(Paragraph::new())));
+        }
+        if let Some(cell) = t.rows.get_mut(r).and_then(|row| row.cells.get_mut(c)) {
+            cell.blocks = blocks;
+        }
+    }
+    Some(t)
 }
 
 fn build_para(ctx: &mut Ctx, doc: &mut Document, mp: &MPara) -> Paragraph {
@@ -229,6 +267,12 @@ fn build_para(ctx: &mut Ctx, doc: &mut Document, mp: &MPara) -> Paragraph {
         if a != now {
             p.props.align = Some(a);
         }
+    }
+
+    if mp.rule {
+        let mut borders = p.props.borders.clone().unwrap_or_default();
+        borders.bottom = Some(Border::single(0.75));
+        p.props.borders = Some(borders);
     }
 
     let style = para_style(&p);
@@ -309,6 +353,12 @@ fn run_props(ctx: &Ctx, doc: &Document, style: &str, seg: &Seg) -> CharProps {
     if let Some(c) = f.c.as_deref().filter(|c| !c.eq_ignore_ascii_case(&cur.color)) {
         props.color = Some(Rgb::parse(c).map(TextColor::Rgb).unwrap_or(TextColor::Auto));
     }
+    if let Some(link) = f.link.as_deref().map(str::trim) {
+        let link = (!link.is_empty() && safe_link(link)).then(|| link.to_string());
+        if link != props.link {
+            props.link = link;
+        }
+    }
     if let Some(bg) = f.bg.as_deref().filter(|bg| !bg.eq_ignore_ascii_case(&cur.bg)) {
         match Rgb::parse(bg) {
             Some(rgb) => match Highlight::ALL.iter().find(|h| h.rgb() == Some(rgb)) {
@@ -354,6 +404,11 @@ fn heading_style(doc: &mut Document, n: u8) -> String {
         }
     }
     id
+}
+
+pub fn safe_link(url: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    u.starts_with("http://") || u.starts_with("https://") || u.starts_with("mailto:")
 }
 
 fn parse_align(a: &str) -> Option<Align> {

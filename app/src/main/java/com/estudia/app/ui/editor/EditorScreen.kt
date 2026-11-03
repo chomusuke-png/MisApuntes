@@ -13,11 +13,29 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.FormatPaint
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.Functions
+import androidx.compose.material.icons.filled.HorizontalRule
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.InsertPageBreak
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import androidx.compose.material.icons.filled.Subscript
 import androidx.compose.material.icons.filled.Superscript
 import androidx.compose.material.icons.filled.TextDecrease
@@ -52,7 +70,6 @@ import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
-import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.BorderColor
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FontDownload
@@ -248,6 +265,10 @@ fun EditorScreen(
         uri?.let { editor.flush { vm.exportWord(it) } }
     }
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        uri?.let(vm::importImage)
+    }
+    LaunchedEffect(Unit) { vm.imageReady.collect { editor.call("editor.insertImage", it) } }
     LaunchedEffect(Unit) {
         vm.shareFile.collect { f ->
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", f)
@@ -366,6 +387,9 @@ fun EditorScreen(
                     editor = editor,
                     onHighlight = ::highlight,
                     onPick = { picker = it },
+                    onInsertImage = {
+                        gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
                 )
                 format.hasSelection -> HighlightBar(
                     colors = (recentHighlights + HIGHLIGHT_PRESETS).distinct().take(8),
@@ -612,7 +636,7 @@ internal fun FormattingToolbar(
 ) {
     // Cinta como la de Word: pestañas arriba y sus herramientas debajo
     var tab by rememberSaveable { mutableStateOf(RibbonTab.HOME) }
-    val tabs = RibbonTab.entries.filter { it != RibbonTab.INSERT || onInsertImage != null }
+    val tabs = RibbonTab.entries
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Column {
             Row(
@@ -633,9 +657,7 @@ internal fun FormattingToolbar(
             ) {
                 when (tab) {
                     RibbonTab.HOME -> HomeTools(format, quickHighlight, recentHighlights, editor, onHighlight, onPick)
-                    RibbonTab.INSERT -> if (onInsertImage != null) {
-                        IconButton(onClick = onInsertImage) { Icon(Icons.Default.AddPhotoAlternate, "Insertar imagen") }
-                    }
+                    RibbonTab.INSERT -> InsertTools(editor, onInsertImage)
                     RibbonTab.PARAGRAPH -> ParagraphTools(format, editor)
                 }
             }
@@ -739,6 +761,153 @@ private fun HomeTools(
     IconButton(onClick = { editor.call("editor.clear") }) {
         Icon(Icons.Default.FormatClear, "Quitar formato")
     }
+}
+
+/** Insertar: imagen, tabla, enlace, saltos, línea, símbolos y fecha. */
+@Composable
+private fun InsertTools(editor: WebEditor, onInsertImage: (() -> Unit)?) {
+    var tableDialog by remember { mutableStateOf(false) }
+    var linkDialog by remember { mutableStateOf(false) }
+
+    if (onInsertImage != null) RibbonButton(Icons.Default.Image, "Imagen", onInsertImage)
+    RibbonButton(Icons.Default.TableChart, "Tabla") { tableDialog = true }
+    RibbonButton(Icons.Default.Link, "Enlace") { linkDialog = true }
+    ToolbarDivider()
+    RibbonButton(Icons.Default.InsertPageBreak, "Salto de página") { editor.call("editor.insertPageBreak") }
+    RibbonButton(Icons.Default.HorizontalRule, "Línea") { editor.call("editor.insertRule") }
+    ToolbarDivider()
+    SymbolMenu { editor.call("editor.insertText", it) }
+    DateMenu { editor.call("editor.insertText", it) }
+
+    if (tableDialog) TableDialog(onDismiss = { tableDialog = false }) { rows, cols ->
+        tableDialog = false
+        editor.call("editor.insertTable", rows, cols)
+    }
+    if (linkDialog) LinkDialog(onDismiss = { linkDialog = false }) { url, text ->
+        linkDialog = false
+        editor.call("editor.insertLink", url, text)
+    }
+}
+
+/** Botón con icono y nombre debajo, como en la cinta de Word. */
+@Composable
+private fun RibbonButton(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(icon, null, modifier = Modifier.size(22.dp))
+        Text(label, fontSize = 11.sp, maxLines = 1)
+    }
+}
+
+private val SYMBOLS = listOf(
+    "©", "®", "™", "°", "±", "×", "÷", "≈", "≠", "≤", "≥", "∞",
+    "√", "∑", "π", "µ", "α", "β", "γ", "Δ", "θ", "λ", "σ", "Ω",
+    "€", "£", "$", "¢", "§", "¶", "•", "…", "—", "«", "»", "¿",
+    "→", "←", "↑", "↓", "⇒", "⇔", "✓", "✗", "★", "♥", "½", "¼",
+)
+
+@Composable
+private fun SymbolMenu(onSelect: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        RibbonButton(Icons.Default.Functions, "Símbolo") { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            SYMBOLS.chunked(6).forEach { row ->
+                Row {
+                    row.forEach { s ->
+                        Box(
+                            Modifier
+                                .size(44.dp)
+                                .clickable { open = false; onSelect(s) },
+                            contentAlignment = Alignment.Center,
+                        ) { Text(s, fontSize = 20.sp) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DateMenu(onSelect: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        RibbonButton(Icons.Default.Event, "Fecha") { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            val now = LocalDateTime.now()
+            val es = Locale.forLanguageTag("es")
+            listOf("dd/MM/yyyy", "d 'de' MMMM 'de' yyyy", "EEEE, d 'de' MMMM 'de' yyyy", "dd/MM/yyyy HH:mm", "HH:mm")
+                .map { now.format(DateTimeFormatter.ofPattern(it, es)) }
+                .forEach { text -> DropdownMenuItem(text = { Text(text) }, onClick = { open = false; onSelect(text) }) }
+        }
+    }
+}
+
+@Composable
+private fun TableDialog(onDismiss: () -> Unit, onInsert: (Int, Int) -> Unit) {
+    var rows by remember { mutableIntStateOf(3) }
+    var cols by remember { mutableIntStateOf(3) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Insertar tabla") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Stepper("Filas", rows, 1..50) { rows = it }
+                Stepper("Columnas", cols, 1..12) { cols = it }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onInsert(rows, cols) }) { Text("Insertar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+@Composable
+private fun Stepper(label: String, value: Int, range: IntRange, onChange: (Int) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, Modifier.weight(1f))
+        IconButton(onClick = { onChange((value - 1).coerceIn(range)) }, enabled = value > range.first) {
+            Icon(Icons.Default.Remove, "Menos")
+        }
+        Text("$value", fontWeight = FontWeight.Bold, modifier = Modifier.width(32.dp), textAlign = TextAlign.Center)
+        IconButton(onClick = { onChange((value + 1).coerceIn(range)) }, enabled = value < range.last) {
+            Icon(Icons.Default.Add, "Más")
+        }
+    }
+}
+
+@Composable
+private fun LinkDialog(onDismiss: () -> Unit, onInsert: (String, String) -> Unit) {
+    var url by remember { mutableStateOf("") }
+    var text by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Insertar enlace") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("Dirección") },
+                    placeholder = { Text("https://…") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                )
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("Texto (opcional)") },
+                    supportingText = { Text("Si lo dejas vacío se enlaza el texto seleccionado") },
+                    singleLine = true,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onInsert(url.trim(), text.trim()) }, enabled = url.isNotBlank()) { Text("Insertar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
 }
 
 /** Párrafo: estilo, alineación, listas y sangría. */

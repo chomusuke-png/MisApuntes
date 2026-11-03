@@ -102,6 +102,17 @@ class EditorViewModel(app: Application, savedState: SavedStateHandle) : AndroidV
     val shareFile = MutableSharedFlow<File>(extraBufferCapacity = 1)
     val busy = MutableStateFlow(false)
 
+    /** Nombre del archivo de imagen listo para insertar en el editor. */
+    val imageReady = MutableSharedFlow<String>(extraBufferCapacity = 1)
+
+    fun importImage(uri: Uri) = viewModelScope.launch {
+        busy.value = true
+        runCatching { repo.importDocumentImage(docId, uri) }
+            .onSuccess { imageReady.emit(it) }
+            .onFailure { messages.emit("No se pudo insertar la imagen: ${it.message}") }
+        busy.value = false
+    }
+
     fun exportWord(target: Uri) = viewModelScope.launch {
         val doc = document.value ?: return@launch
         busy.value = true
