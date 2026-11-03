@@ -416,6 +416,126 @@
     page.querySelectorAll('font[color="#010203"]').forEach(unwrap);
   }
 
+  // ---------- Mayúsculas / minúsculas ----------
+
+  /** Cambia el texto seleccionado sin tocar su formato (cada trozo conserva su span). */
+  function changeCase(mode) {
+    restoreRange();
+    const sel = window.getSelection();
+    if (!sel.rangeCount || sel.isCollapsed) return;
+    const range = sel.getRangeAt(0);
+    if (!page.contains(range.commonAncestorContainer)) return;
+    if (typingTimer) snapshot();
+
+    const parts = [];
+    const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = walker.nextNode())) {
+      if (!range.intersectsNode(n)) continue;
+      const start = n === range.startContainer ? range.startOffset : 0;
+      const end = n === range.endContainer ? range.endOffset : n.nodeValue.length;
+      if (end > start) parts.push({ node: n, start: start, end: end });
+    }
+    const text = parts.map(function (p) { return p.node.nodeValue.slice(p.start, p.end); }).join('');
+    let out;
+    switch (mode) {
+      case 'upper': out = text.toLocaleUpperCase(); break;
+      case 'lower': out = text.toLocaleLowerCase(); break;
+      case 'title':
+        out = text.toLocaleLowerCase().replace(/(^|[\s\-("¿¡«])(\p{L})/gu, function (m, a, b) { return a + b.toLocaleUpperCase(); });
+        break;
+      case 'sentence':
+        out = text.toLocaleLowerCase().replace(/(^\s*|[.!?¿¡]\s+|\n\s*)(\p{L})/gu, function (m, a, b) { return a + b.toLocaleUpperCase(); });
+        break;
+      case 'toggle':
+        out = Array.from(text).map(function (c) {
+          const u = c.toLocaleUpperCase();
+          return c === u ? c.toLocaleLowerCase() : u;
+        }).join('');
+        break;
+      default: return;
+    }
+    // Algunas letras cambian de largo (ß → SS): entonces se cambia trozo por trozo
+    const sameLength = out.length === text.length;
+    let pos = 0;
+    parts.forEach(function (p) {
+      const v = p.node.nodeValue;
+      const piece = v.slice(p.start, p.end);
+      const len = piece.length;
+      const repl = sameLength ? out.slice(pos, pos + len) : (mode === 'lower' ? piece.toLocaleLowerCase() : piece.toLocaleUpperCase());
+      pos += len;
+      p.node.nodeValue = v.slice(0, p.start) + repl + v.slice(p.end);
+      p.end = p.start + repl.length;
+    });
+    if (parts.length) {
+      const r = document.createRange();
+      r.setStart(parts[0].node, parts[0].start);
+      r.setEnd(parts[parts.length - 1].node, parts[parts.length - 1].end);
+      sel.removeAllRanges();
+      sel.addRange(r);
+      savedRange = r.cloneRange();
+    }
+    afterCommand();
+  }
+
+  // ---------- Copiar formato (brocha) ----------
+
+  let painter = null;
+
+  /** Formato del texto donde está el cursor. */
+  function formatAt(el) {
+    const cs = getComputedStyle(el);
+    let underline = false, strike = false;
+    for (let n = el; n && n !== page; n = n.parentNode) {
+      const d = getComputedStyle(n).textDecorationLine || '';
+      if (d.indexOf('underline') >= 0) underline = true;
+      if (d.indexOf('line-through') >= 0) strike = true;
+    }
+    return {
+      bold: parseInt(cs.fontWeight, 10) >= 600,
+      italic: cs.fontStyle !== 'normal',
+      underline: underline,
+      strike: strike,
+      sup: !!el.closest('sup'),
+      sub: !!el.closest('sub'),
+      color: cs.color,
+      back: backgroundAt(el),
+      font: cs.fontFamily,
+      sizePt: Math.round(parseFloat(cs.fontSize) * 0.75 * 2) / 2
+    };
+  }
+
+  function togglePainter() {
+    if (painter === null) {
+      const el = anchorElement();
+      if (el) painter = formatAt(el);
+      queueReport();
+      return;
+    }
+    const f = painter;
+    painter = null;
+    const sel = window.getSelection();
+    if (!savedRange || savedRange.collapsed) { queueReport(); return; }
+    // Cada comando cambia el DOM: la selección se vuelve a tomar después de cada uno
+    function apply(name, value) {
+      exec(name, value);
+      if (sel.rangeCount) savedRange = sel.getRangeAt(0).cloneRange();
+    }
+    apply('removeFormat');
+    if (f.bold) apply('bold');
+    if (f.italic) apply('italic');
+    if (f.underline) apply('underline');
+    if (f.strike) apply('strikeThrough');
+    if (f.sup) apply('superscript');
+    if (f.sub) apply('subscript');
+    apply('foreColor', f.color);
+    if (f.back) apply('hiliteColor', f.back);
+    apply('fontName', f.font);
+    pendingFontPt = f.sizePt;
+    apply('fontSize', '7');
+    afterCommand();
+  }
+
   // ---------- Estado para la barra de herramientas ----------
 
   function anchorElement() {
@@ -452,6 +572,9 @@
       italic: state('italic'),
       underline: state('underline'),
       strike: state('strikeThrough'),
+      sup: state('superscript'),
+      sub: state('subscript'),
+      painter: painter !== null,
       block: (value('formatBlock') || 'p').toLowerCase(),
       font: value('fontName'),
       size: Math.round(sizePx * 0.75 * 2) / 2,
@@ -774,6 +897,8 @@
       exec('insertHTML', '<img src="' + String(src).replace(/[&"<>]/g, '') + '"><br>');
       afterCommand();
     },
+    changeCase: changeCase,
+    painter: togglePainter,
     undo: undo,
     redo: redo,
     setReadOnly: function (ro) {

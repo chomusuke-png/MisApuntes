@@ -27,6 +27,10 @@ data class EditorState(
     val italic: Boolean = false,
     val underline: Boolean = false,
     val strike: Boolean = false,
+    val sup: Boolean = false,
+    val sub: Boolean = false,
+    /** Brocha armada: hay un formato copiado esperando aplicarse. */
+    val painter: Boolean = false,
     val block: String = "p",
     val font: String = "",
     val size: Float = 12f,

@@ -17,6 +17,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.FormatPaint
+import androidx.compose.material.icons.filled.Subscript
+import androidx.compose.material.icons.filled.Superscript
+import androidx.compose.material.icons.filled.TextDecrease
+import androidx.compose.material.icons.filled.TextIncrease
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import com.estudia.app.importers.WordBridge
@@ -605,8 +610,20 @@ internal fun FormattingToolbar(
     onPick: (ColorKind) -> Unit,
     onInsertImage: (() -> Unit)? = null,
 ) {
+    // Cinta como la de Word: pestañas arriba y sus herramientas debajo
+    var tab by rememberSaveable { mutableStateOf(RibbonTab.HOME) }
+    val tabs = RibbonTab.entries.filter { it != RibbonTab.INSERT || onInsertImage != null }
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Column {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 4.dp),
+            ) {
+                tabs.forEach { t -> RibbonTabButton(t.label, selected = t == tab) { tab = t } }
+            }
+            HorizontalDivider()
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -614,79 +631,167 @@ internal fun FormattingToolbar(
                     .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (onInsertImage != null) {
-                    IconButton(onClick = onInsertImage) { Icon(Icons.Default.AddPhotoAlternate, "Insertar imagen") }
-                    ToolbarDivider()
-                }
-                BlockMenu(format.block) { editor.call("editor.block", it) }
-                FontMenu(format.font) { editor.call("editor.cmd", "fontName", it) }
-                SizeMenu(format.size) { editor.call("editor.fontSize", it) }
-                ToolbarDivider()
-
-                StyleToggle(Icons.Default.FormatBold, "Negrita", format.bold) { editor.call("editor.cmd", "bold") }
-                StyleToggle(Icons.Default.FormatItalic, "Cursiva", format.italic) { editor.call("editor.cmd", "italic") }
-                StyleToggle(Icons.Default.FormatUnderlined, "Subrayado", format.underline) { editor.call("editor.cmd", "underline") }
-                StyleToggle(Icons.Default.FormatStrikethrough, "Tachado", format.strike) { editor.call("editor.cmd", "strikeThrough") }
-                ToolbarDivider()
-
-                // Color de texto: barra inferior con el color actual
-                IconButton(onClick = { onPick(ColorKind.TEXT) }) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.FormatColorText, "Color de texto")
-                        Box(
-                            Modifier
-                                .width(20.dp)
-                                .height(4.dp)
-                                .background(parseCssColor(format.color)?.let(::Color) ?: MaterialTheme.colorScheme.onSurface)
-                        )
+                when (tab) {
+                    RibbonTab.HOME -> HomeTools(format, quickHighlight, recentHighlights, editor, onHighlight, onPick)
+                    RibbonTab.INSERT -> if (onInsertImage != null) {
+                        IconButton(onClick = onInsertImage) { Icon(Icons.Default.AddPhotoAlternate, "Insertar imagen") }
                     }
+                    RibbonTab.PARAGRAPH -> ParagraphTools(format, editor)
                 }
-                // Resaltado: el marcador aplica el último color usado; la paleta abre el selector
-                IconButton(onClick = { onHighlight(quickHighlight) }) {
-                    Icon(Icons.Default.BorderColor, "Resaltar", tint = Color(quickHighlight))
-                }
-                IconButton(onClick = { onPick(ColorKind.HIGHLIGHT) }) {
-                    Icon(Icons.Default.Palette, "Elegir color de resaltado")
-                }
-                recentHighlights.drop(1).take(5).forEach { color ->
-                    Box(Modifier.padding(horizontal = 4.dp)) {
-                        Swatch(color, selected = parseCssColor(format.back) == color, size = 26) { onHighlight(color) }
-                    }
-                }
-                IconButton(onClick = { onHighlight(null) }) {
-                    Icon(Icons.Default.FormatColorReset, "Quitar resaltado")
-                }
-                ToolbarDivider()
+            }
+        }
+    }
+}
 
-                StyleToggle(Icons.AutoMirrored.Filled.FormatAlignLeft, "Alinear a la izquierda", format.align == "left") {
-                    editor.call("editor.cmd", "justifyLeft")
-                }
-                StyleToggle(Icons.Default.FormatAlignCenter, "Centrar", format.align == "center") {
-                    editor.call("editor.cmd", "justifyCenter")
-                }
-                StyleToggle(Icons.AutoMirrored.Filled.FormatAlignRight, "Alinear a la derecha", format.align == "right") {
-                    editor.call("editor.cmd", "justifyRight")
-                }
-                StyleToggle(Icons.Default.FormatAlignJustify, "Justificar", format.align == "justify") {
-                    editor.call("editor.cmd", "justifyFull")
-                }
-                ToolbarDivider()
-                StyleToggle(Icons.AutoMirrored.Filled.FormatListBulleted, "Viñetas", format.ul) {
-                    editor.call("editor.cmd", "insertUnorderedList")
-                }
-                StyleToggle(Icons.Default.FormatListNumbered, "Numeración", format.ol) {
-                    editor.call("editor.cmd", "insertOrderedList")
-                }
-                IconButton(onClick = { editor.call("editor.cmd", "outdent") }) {
-                    Icon(Icons.AutoMirrored.Filled.FormatIndentDecrease, "Reducir sangría")
-                }
-                IconButton(onClick = { editor.call("editor.cmd", "indent") }) {
-                    Icon(Icons.AutoMirrored.Filled.FormatIndentIncrease, "Aumentar sangría")
-                }
-                ToolbarDivider()
-                IconButton(onClick = { editor.call("editor.clear") }) {
-                    Icon(Icons.Default.FormatClear, "Quitar formato")
-                }
+private enum class RibbonTab(val label: String) {
+    HOME("Inicio"),
+    INSERT("Insertar"),
+    PARAGRAPH("Párrafo"),
+}
+
+@Composable
+private fun RibbonTabButton(label: String, selected: Boolean, onClick: () -> Unit) {
+    val color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        Modifier
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            label,
+            color = color,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            fontSize = 14.sp,
+            modifier = Modifier.padding(top = 8.dp, bottom = 6.dp),
+        )
+        Box(
+            Modifier
+                .width(28.dp)
+                .height(3.dp)
+                .background(if (selected) color else Color.Transparent, RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp))
+        )
+    }
+}
+
+/** Inicio: fuente, formato del texto, colores y copiar formato. */
+@Composable
+private fun HomeTools(
+    format: EditorState,
+    quickHighlight: Int,
+    recentHighlights: List<Int>,
+    editor: WebEditor,
+    onHighlight: (Int?) -> Unit,
+    onPick: (ColorKind) -> Unit,
+) {
+    FontMenu(format.font) { editor.call("editor.cmd", "fontName", it) }
+    SizeMenu(format.size) { editor.call("editor.fontSize", it) }
+    IconButton(onClick = { editor.call("editor.fontSize", nextSize(format.size, up = true)) }) {
+        Icon(Icons.Default.TextIncrease, "Agrandar fuente")
+    }
+    IconButton(onClick = { editor.call("editor.fontSize", nextSize(format.size, up = false)) }) {
+        Icon(Icons.Default.TextDecrease, "Achicar fuente")
+    }
+    ToolbarDivider()
+
+    StyleToggle(Icons.Default.FormatBold, "Negrita", format.bold) { editor.call("editor.cmd", "bold") }
+    StyleToggle(Icons.Default.FormatItalic, "Cursiva", format.italic) { editor.call("editor.cmd", "italic") }
+    StyleToggle(Icons.Default.FormatUnderlined, "Subrayado", format.underline) { editor.call("editor.cmd", "underline") }
+    StyleToggle(Icons.Default.FormatStrikethrough, "Tachado", format.strike) { editor.call("editor.cmd", "strikeThrough") }
+    StyleToggle(Icons.Default.Superscript, "Superíndice", format.sup) { editor.call("editor.cmd", "superscript") }
+    StyleToggle(Icons.Default.Subscript, "Subíndice", format.sub) { editor.call("editor.cmd", "subscript") }
+    CaseMenu { editor.call("editor.changeCase", it) }
+    ToolbarDivider()
+
+    // Color de texto: barra inferior con el color actual
+    IconButton(onClick = { onPick(ColorKind.TEXT) }) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(Icons.Default.FormatColorText, "Color de texto")
+            Box(
+                Modifier
+                    .width(20.dp)
+                    .height(4.dp)
+                    .background(parseCssColor(format.color)?.let(::Color) ?: MaterialTheme.colorScheme.onSurface)
+            )
+        }
+    }
+    // Resaltado: el marcador aplica el último color usado; la paleta abre el selector
+    IconButton(onClick = { onHighlight(quickHighlight) }) {
+        Icon(Icons.Default.BorderColor, "Resaltar", tint = Color(quickHighlight))
+    }
+    IconButton(onClick = { onPick(ColorKind.HIGHLIGHT) }) {
+        Icon(Icons.Default.Palette, "Elegir color de resaltado")
+    }
+    recentHighlights.drop(1).take(5).forEach { color ->
+        Box(Modifier.padding(horizontal = 4.dp)) {
+            Swatch(color, selected = parseCssColor(format.back) == color, size = 26) { onHighlight(color) }
+        }
+    }
+    IconButton(onClick = { onHighlight(null) }) {
+        Icon(Icons.Default.FormatColorReset, "Quitar resaltado")
+    }
+    ToolbarDivider()
+
+    // Brocha: primer toque copia el formato; tras seleccionar otro texto, el segundo lo aplica
+    StyleToggle(Icons.Default.FormatPaint, if (format.painter) "Aplicar formato copiado" else "Copiar formato", format.painter) {
+        editor.call("editor.painter")
+    }
+    IconButton(onClick = { editor.call("editor.clear") }) {
+        Icon(Icons.Default.FormatClear, "Quitar formato")
+    }
+}
+
+/** Párrafo: estilo, alineación, listas y sangría. */
+@Composable
+private fun ParagraphTools(format: EditorState, editor: WebEditor) {
+    BlockMenu(format.block) { editor.call("editor.block", it) }
+    ToolbarDivider()
+    StyleToggle(Icons.AutoMirrored.Filled.FormatAlignLeft, "Alinear a la izquierda", format.align == "left") {
+        editor.call("editor.cmd", "justifyLeft")
+    }
+    StyleToggle(Icons.Default.FormatAlignCenter, "Centrar", format.align == "center") {
+        editor.call("editor.cmd", "justifyCenter")
+    }
+    StyleToggle(Icons.AutoMirrored.Filled.FormatAlignRight, "Alinear a la derecha", format.align == "right") {
+        editor.call("editor.cmd", "justifyRight")
+    }
+    StyleToggle(Icons.Default.FormatAlignJustify, "Justificar", format.align == "justify") {
+        editor.call("editor.cmd", "justifyFull")
+    }
+    ToolbarDivider()
+    StyleToggle(Icons.AutoMirrored.Filled.FormatListBulleted, "Viñetas", format.ul) {
+        editor.call("editor.cmd", "insertUnorderedList")
+    }
+    StyleToggle(Icons.Default.FormatListNumbered, "Numeración", format.ol) {
+        editor.call("editor.cmd", "insertOrderedList")
+    }
+    IconButton(onClick = { editor.call("editor.cmd", "outdent") }) {
+        Icon(Icons.AutoMirrored.Filled.FormatIndentDecrease, "Reducir sangría")
+    }
+    IconButton(onClick = { editor.call("editor.cmd", "indent") }) {
+        Icon(Icons.AutoMirrored.Filled.FormatIndentIncrease, "Aumentar sangría")
+    }
+}
+
+/** Siguiente tamaño de la lista hacia arriba o hacia abajo (como Agrandar/Encoger fuente de Word). */
+private fun nextSize(current: Float, up: Boolean): Int =
+    if (up) SIZES.firstOrNull { it > current + 0.1f } ?: SIZES.last()
+    else SIZES.lastOrNull { it < current - 0.1f } ?: SIZES.first()
+
+@Composable
+private fun CaseMenu(onSelect: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        TextButton(onClick = { open = true }) { Text("Aa", fontWeight = FontWeight.Bold) }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            listOf(
+                "sentence" to "Tipo oración.",
+                "lower" to "minúsculas",
+                "upper" to "MAYÚSCULAS",
+                "title" to "Poner En Mayúsculas Cada Palabra",
+                "toggle" to "tIPO iNVERSO",
+            ).forEach { (mode, label) ->
+                DropdownMenuItem(text = { Text(label) }, onClick = { open = false; onSelect(mode) })
             }
         }
     }
