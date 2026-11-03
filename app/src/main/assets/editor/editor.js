@@ -264,6 +264,8 @@
           if (!n.nodeValue) continue;
           const run = within(n, block, '[data-r]');
           const seg = { t: n.nodeValue, r: run ? run.dataset.r : null, f: look(n, block, withBlock) };
+          // Estilo Código: letra de máquina de escribir si el texto no tiene otra
+          if (block.tagName === 'PRE' && !seg.f.font) seg.f.font = 'Courier New';
           if (within(n, block, '.wh')) seg.hid = true;
           push(seg);
           continue;
@@ -295,15 +297,68 @@
     return el.style.textAlign || (el.getAttribute('align') || null);
   }
 
+  /** Interlineado (múltiplo de sencillo = 1.2 en el editor), espacios y sangría declarados. */
+  function paraBox(el, withIndent) {
+    const s = el.style, o = {};
+    if (s.lineHeight && /^[\d.]+$/.test(s.lineHeight)) o.lh = Math.round(parseFloat(s.lineHeight) / 1.2 * 100) / 100;
+    const sb = sizePt(s.marginTop || ''), sa = sizePt(s.marginBottom || ''), il = sizePt(s.marginLeft || '');
+    if (sb !== null) o.sb = sb;
+    if (sa !== null) o.sa = sa;
+    if (withIndent && il !== null) o.il = il;
+    return o;
+  }
+
+  function blockTag(tag) {
+    if (/^H[1-6]$/.test(tag)) return tag.toLowerCase();
+    if (tag === 'BLOCKQUOTE') return 'blockquote';
+    if (tag === 'PRE') return 'pre';
+    return 'p';
+  }
+
+  /** Párrafos (sin otros párrafos dentro) que toca la selección. */
+  const LEAF_BLOCKS = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,pre';
+  function selectedBlocks() {
+    const r = savedRange;
+    if (!r) return [];
+    const out = [];
+    page.querySelectorAll(LEAF_BLOCKS).forEach(function (el) {
+      if (el.closest('[data-x]') || el.querySelector(LEAF_BLOCKS)) return;
+      if (r.intersectsNode(el)) out.push(el);
+    });
+    if (!out.length) {
+      const b = blockOf(r.startContainer);
+      if (b) out.push(b);
+    }
+    return out;
+  }
+
+  function formatBlocks(fn) {
+    if (typingTimer) snapshot();
+    restoreRange();
+    selectedBlocks().forEach(fn);
+    afterCommand();
+  }
+
   let listCount = 0;
 
-  function listModel(list, level, out) {
+  function listModel(list, level, out, firstSrc) {
     const id = ++listCount;
     const kind = list.tagName.toLowerCase();
+    let first = true;
     for (let li = list.firstElementChild; li; li = li.nextElementSibling) {
       if (li.tagName !== 'LI') continue;
       const nested = [];
-      out.push({ p: { src: li.dataset.b || null, tag: 'li', list: kind, list_id: id, level: level, align: align(li), segs: segments(li, nested) } });
+      const p = paraBox(li, false);
+      p.src = li.dataset.b || (first ? firstSrc || null : null);
+      first = false;
+      p.tag = 'li';
+      p.list = kind;
+      p.list_style = list.style.listStyleType || null;
+      p.list_id = id;
+      p.level = level;
+      p.align = align(li);
+      p.segs = segments(li, nested);
+      out.push({ p: p });
       nested.forEach(function (n) { listModel(n, level + 1, out); });
     }
   }
@@ -342,7 +397,15 @@
         blocksOf(n, counts, out);
         continue;
       }
-      out.push({ p: { src: b || null, tag: /^H[1-6]$/.test(tag) ? tag.toLowerCase() : 'p', align: align(n), segs: segments(n, null) } });
+      const p = paraBox(n, true);
+      const nested = [];
+      p.src = b || null;
+      p.tag = blockTag(tag);
+      p.align = align(n);
+      p.segs = segments(n, nested);
+      // Chrome a veces deja la lista nueva dentro del párrafo original: la lista hereda su origen
+      if (p.segs.length || !nested.length) out.push({ p: p });
+      nested.forEach(function (list, i) { listModel(list, 0, out, i === 0 && !p.segs.length ? p.src : null); });
     }
   }
 
@@ -880,7 +943,7 @@
       // El aspecto del párrafo pasa a ser el del nuevo estilo (título o normal), no el anterior
       if (after && after.dataset.b) {
         after.dataset.h = '1';
-        ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'color', 'textDecoration', 'backgroundColor'].forEach(function (p) {
+        ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'color', 'textDecoration', 'backgroundColor', 'margin', 'lineHeight'].forEach(function (p) {
           after.style[p] = '';
         });
       }
@@ -944,6 +1007,39 @@
     },
     insertText: function (text) {
       exec('insertText', String(text));
+      afterCommand();
+    },
+    lineSpacing: function (m) {
+      formatBlocks(function (b) { b.style.lineHeight = String(Math.round(m * 1.2 * 100) / 100); });
+    },
+    spacing: function (which, pt) {
+      formatBlocks(function (b) { b.style[which === 'before' ? 'marginTop' : 'marginBottom'] = pt + 'pt'; });
+    },
+    /** Sangría: en listas cambia el nivel; en párrafos mueve el margen izquierdo de a 36 pt (como Word). */
+    indent: function (dir) {
+      restoreRange();
+      const blocks = selectedBlocks();
+      if (blocks.some(function (b) { return b.tagName === 'LI'; })) {
+        exec(dir > 0 ? 'indent' : 'outdent');
+        afterCommand();
+        return;
+      }
+      formatBlocks(function (b) {
+        const cur = sizePt(b.style.marginLeft || '') || 0;
+        b.style.marginLeft = Math.max(0, Math.round((cur + dir * 36) / 36) * 36) + 'pt';
+      });
+    },
+    /** Lista con viñeta o numeración de un tipo (list-style-type). */
+    list: function (kind, style) {
+      restoreRange();
+      let el = anchorElement();
+      let list = el && el.closest('ul,ol');
+      if (!list || list.tagName.toLowerCase() !== kind) {
+        exec(kind === 'ol' ? 'insertOrderedList' : 'insertUnorderedList');
+        el = anchorElement();
+        list = el && el.closest('ul,ol');
+      }
+      if (list) list.style.listStyleType = style;
       afterCommand();
     },
     changeCase: changeCase,

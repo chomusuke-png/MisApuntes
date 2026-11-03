@@ -12,11 +12,11 @@ use std::sync::Arc;
 use serde::Deserialize;
 use wordcraft_doc::numbering::ListKind;
 use wordcraft_doc::para::{Float, InlineObject};
-use wordcraft_doc::props::{Border, Borders, Highlight, NumRef, Underline, VertAlign};
+use wordcraft_doc::props::{Border, Borders, Highlight, LineSpacing, NumRef, Underline, VertAlign};
 use wordcraft_doc::styles::StyleSheet;
 use wordcraft_doc::{Align, Block, Blocks, CharProps, Document, Paragraph, Rgb, Table, TextColor};
 
-use crate::render::{Look, heading_level, image_ext, para_style};
+use crate::render::{BlockKind, Look, block_kind, image_ext, para_style};
 
 #[derive(Deserialize)]
 pub struct Model {
@@ -49,6 +49,13 @@ pub struct MPara {
     /// Línea horizontal insertada en el editor: párrafo vacío con borde inferior.
     #[serde(default)]
     pub rule: bool,
+    /// Tipo de viñeta o numeración (list-style-type de CSS).
+    pub list_style: Option<String>,
+    /// Interlineado (múltiplo de sencillo), espacio antes/después y sangría izquierda en puntos.
+    pub lh: Option<f32>,
+    pub sb: Option<f32>,
+    pub sa: Option<f32>,
+    pub il: Option<f32>,
     #[serde(default)]
     pub segs: Vec<Seg>,
 }
@@ -233,31 +240,60 @@ fn build_para(ctx: &mut Ctx, doc: &mut Document, mp: &MPara) -> Paragraph {
         }
     }
 
-    // Título / párrafo normal
-    let rp = doc.styles.resolve_para(&p.props);
-    let current = heading_level(doc, &para_style(&p), &rp);
-    let wanted = mp.tag.strip_prefix('h').and_then(|n| n.parse::<u8>().ok()).filter(|n| (1..=6).contains(n));
+    // Título, cita o párrafo normal
+    let current = block_kind(doc, &p);
+    let wanted = match mp.tag.as_str() {
+        "blockquote" => BlockKind::Quote,
+        t => t.strip_prefix('h').and_then(|n| n.parse::<u8>().ok()).filter(|n| (1..=6).contains(n)).map_or(BlockKind::Plain, BlockKind::Heading),
+    };
     if wanted != current {
         p.props.outline_level = None;
-        p.props.style = wanted.map(|n| heading_style(doc, n));
+        p.props.style = match wanted {
+            BlockKind::Heading(n) => Some(heading_style(doc, n)),
+            BlockKind::Quote => Some(builtin_style(doc, "Quote")),
+            BlockKind::Plain => None,
+        };
     }
 
     // Listas creadas en el editor (las de Word conservan su numeración)
     let had_numbering = src_para.and_then(|sp| doc.styles.resolve_para(&sp.props).numbering).is_some_and(|n| n.num != 0);
     if let Some(list) = mp.list.as_deref() {
         if !had_numbering {
-            let ordered = list == "ol";
-            let key = (mp.list_id, ordered);
+            let kind = list_kind(list, mp.list_style.as_deref());
+            let key = (mp.list_id, list == "ol");
             let num = match ctx.lists.get(&key) {
                 Some(n) => *n,
                 None => {
-                    let n = doc.numbering.add_list(if ordered { ListKind::Numbered } else { ListKind::Bullet });
+                    let n = doc.numbering.add_list(kind);
                     ctx.lists.insert(key, n);
                     n
                 }
             };
             p.props.numbering = Some(NumRef { num, level: mp.level.min(8) });
         }
+    }
+
+    // Interlineado, espacio antes/después y sangría: solo si cambiaron a la vista
+    let rp = doc.styles.resolve_para(&p.props);
+    if let Some(m) = mp.lh.filter(|m| m.is_finite() && *m > 0.0) {
+        let same = matches!(rp.line_spacing, LineSpacing::Multiple(now) if (now - m).abs() < 0.03);
+        if !same {
+            p.props.line_spacing = Some(LineSpacing::Multiple((m * 100.0).round() / 100.0));
+        }
+    }
+    let before = if rp.before_auto { 14.0 } else { rp.space_before };
+    if let Some(sb) = mp.sb.filter(|v| v.is_finite() && (v - before).abs() > 0.5) {
+        p.props.space_before = Some(sb.max(0.0));
+        p.props.space_before_auto = Some(false);
+    }
+    let after = if rp.after_auto { 14.0 } else { rp.space_after };
+    if let Some(sa) = mp.sa.filter(|v| v.is_finite() && (v - after).abs() > 0.5) {
+        p.props.space_after = Some(sa.max(0.0));
+        p.props.space_after_auto = Some(false);
+    }
+    if let Some(il) = mp.il.filter(|v| v.is_finite() && (v - rp.indent_left).abs() > 0.5) {
+        p.props.indent_left = Some(il.max(0.0));
+        p.props.indent_left_chars = None;
     }
 
     // Alineación
@@ -388,6 +424,29 @@ fn new_image(ctx: &Ctx, doc: &mut Document, file: &str, w: Option<f32>, h: Optio
     let (w, h) = (w.filter(|v| *v > 0.0).unwrap_or(200.0), h.filter(|v| *v > 0.0).unwrap_or(150.0));
     let media = doc.add_media(bytes, ext);
     Some(InlineObject::Image { media, w, h, alt: String::new(), float: Float::default(), crop: [0.0; 4], ole: None })
+}
+
+fn list_kind(list: &str, style: Option<&str>) -> ListKind {
+    match (list, style.unwrap_or("")) {
+        ("ol", "lower-alpha" | "lower-latin") => ListKind::LowerLetterDot,
+        ("ol", "upper-alpha" | "upper-latin") => ListKind::UpperLetter,
+        ("ol", "lower-roman") => ListKind::LowerRoman,
+        ("ol", "upper-roman") => ListKind::Outline,
+        ("ol", _) => ListKind::Numbered,
+        (_, "circle") => ListKind::BulletChar('◦'),
+        (_, "square") => ListKind::BulletChar('▪'),
+        _ => ListKind::Bullet,
+    }
+}
+
+/// Un estilo de Word por id; si el documento no lo tiene, se agrega el de Word.
+fn builtin_style(doc: &mut Document, id: &str) -> String {
+    if doc.styles.get(id).is_none() {
+        if let Some(s) = StyleSheet::builtin().get(id).cloned() {
+            doc.styles.upsert(s);
+        }
+    }
+    id.to_string()
 }
 
 /// Estilo de título N del documento (aunque tenga otro id, como "Ttulo1"); si no existe, el de

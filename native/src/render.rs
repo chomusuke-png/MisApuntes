@@ -87,6 +87,27 @@ pub fn heading_level(doc: &Document, style: &str, rp: &ResolvedPara) -> Option<u
     rp.outline_level.filter(|l| *l < 6).map(|l| l + 1)
 }
 
+/// Cómo se muestra un párrafo en el editor (y qué estilo de Word le corresponde al volver).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockKind {
+    Heading(u8),
+    Quote,
+    Plain,
+}
+
+pub fn block_kind(doc: &Document, p: &Paragraph) -> BlockKind {
+    let style = para_style(p);
+    let rp = doc.styles.resolve_para(&p.props);
+    if let Some(n) = heading_level(doc, &style, &rp) {
+        return BlockKind::Heading(n);
+    }
+    let quote = doc.styles.chain(&style).iter().any(|s| {
+        let name = s.name.to_ascii_lowercase();
+        name == "quote" || name == "intense quote"
+    });
+    if quote { BlockKind::Quote } else { BlockKind::Plain }
+}
+
 pub struct Renderer<'a> {
     doc: &'a Document,
     media_dir: &'a Path,
@@ -144,9 +165,10 @@ impl<'a> Renderer<'a> {
         let rp = doc.styles.resolve_para(&p.props);
         let base = doc.styles.resolve_char(Some(&style), &CharProps::default());
         let base_look = Look::of(&base);
-        let tag = match heading_level(doc, &style, &rp) {
-            Some(n) => format!("h{n}"),
-            None => "p".into(),
+        let tag = match block_kind(doc, p) {
+            BlockKind::Heading(n) => format!("h{n}"),
+            BlockKind::Quote => "blockquote".into(),
+            BlockKind::Plain => "p".into(),
         };
 
         if rp.page_break_before {

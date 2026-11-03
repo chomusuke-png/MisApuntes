@@ -118,3 +118,25 @@ fn new_table_link_and_rule() {
     assert!(html.contains("<a href=\"https://example.com\">sitio</a>"));
     assert!(html.contains("border-bottom:"));
 }
+
+#[test]
+fn paragraph_spacing_lists_and_quote() {
+    let dir = tmp("para");
+    let out = dir.join("out.docx");
+    let model = r##"{"blocks":[
+        {"p":{"tag":"blockquote","segs":[{"t":"cita"}]}},
+        {"p":{"tag":"p","lh":1.5,"sb":12,"sa":6,"il":36,"segs":[{"t":"espaciado"}]}},
+        {"p":{"tag":"li","list":"ol","list_style":"lower-roman","list_id":1,"segs":[{"t":"uno"}]}}
+    ]}"##;
+    wordbridge::to_docx("", "", model, dir.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+    let doc = wordbridge::open(out.to_str().unwrap(), "docx").unwrap();
+    assert_eq!(doc.body[0].as_para().unwrap().props.style.as_deref(), Some("Quote"));
+    let p = &doc.body[1].as_para().unwrap().props;
+    assert_eq!(p.line_spacing, Some(wordcraft_doc::props::LineSpacing::Multiple(1.5)));
+    assert_eq!((p.space_before, p.space_after, p.indent_left), (Some(12.0), Some(6.0), Some(36.0)));
+    let li = doc.body[2].as_para().unwrap().props.numbering.unwrap();
+    let level = doc.numbering.level(li.num, 0).unwrap();
+    assert_eq!(format!("{:?}", level.format), "LowerRoman");
+    let html = wordbridge::to_html(out.to_str().unwrap(), "docx", dir.to_str().unwrap()).unwrap();
+    assert!(html.contains("<blockquote data-b=\"0\""));
+}

@@ -19,6 +19,11 @@ import androidx.core.content.FileProvider
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.FormatPaint
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.FormatLineSpacing
+import androidx.compose.material.icons.filled.VerticalAlignBottom
+import androidx.compose.material.icons.filled.VerticalAlignTop
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.Functions
@@ -928,17 +933,78 @@ private fun ParagraphTools(format: EditorState, editor: WebEditor) {
         editor.call("editor.cmd", "justifyFull")
     }
     ToolbarDivider()
-    StyleToggle(Icons.AutoMirrored.Filled.FormatListBulleted, "Viñetas", format.ul) {
-        editor.call("editor.cmd", "insertUnorderedList")
-    }
-    StyleToggle(Icons.Default.FormatListNumbered, "Numeración", format.ol) {
-        editor.call("editor.cmd", "insertOrderedList")
-    }
-    IconButton(onClick = { editor.call("editor.cmd", "outdent") }) {
+    ListMenu(
+        Icons.AutoMirrored.Filled.FormatListBulleted, "Viñetas", format.ul,
+        listOf("disc" to "•  Círculo", "circle" to "◦  Círculo vacío", "square" to "▪  Cuadrado"),
+        onRemove = { editor.call("editor.cmd", "insertUnorderedList") },
+    ) { editor.call("editor.list", "ul", it) }
+    ListMenu(
+        Icons.Default.FormatListNumbered, "Numeración", format.ol,
+        listOf(
+            "decimal" to "1.  2.  3.",
+            "lower-alpha" to "a.  b.  c.",
+            "upper-alpha" to "A.  B.  C.",
+            "lower-roman" to "i.  ii.  iii.",
+            "upper-roman" to "I.  II.  III.",
+        ),
+        onRemove = { editor.call("editor.cmd", "insertOrderedList") },
+    ) { editor.call("editor.list", "ol", it) }
+    IconButton(onClick = { editor.call("editor.indent", -1) }) {
         Icon(Icons.AutoMirrored.Filled.FormatIndentDecrease, "Reducir sangría")
     }
-    IconButton(onClick = { editor.call("editor.cmd", "indent") }) {
+    IconButton(onClick = { editor.call("editor.indent", 1) }) {
         Icon(Icons.AutoMirrored.Filled.FormatIndentIncrease, "Aumentar sangría")
+    }
+    ToolbarDivider()
+    ValueMenu(Icons.Default.FormatLineSpacing, "Interlineado", listOf(1.0, 1.15, 1.5, 2.0, 2.5, 3.0).map { it to it.toString() }) {
+        editor.call("editor.lineSpacing", it)
+    }
+    ValueMenu(Icons.Default.VerticalAlignTop, "Antes", SPACINGS) { editor.call("editor.spacing", "before", it) }
+    ValueMenu(Icons.Default.VerticalAlignBottom, "Después", SPACINGS) { editor.call("editor.spacing", "after", it) }
+}
+
+private val SPACINGS = listOf(0, 6, 12, 18, 24).map { it to "$it pt" }
+
+/** Botón de lista: un toque la pone o la quita; la flecha elige el tipo de viñeta o número. */
+@Composable
+private fun ListMenu(
+    icon: ImageVector,
+    label: String,
+    active: Boolean,
+    styles: List<Pair<String, String>>,
+    onRemove: () -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StyleToggle(icon, label, active) { if (active) onRemove() else onSelect(styles.first().first) }
+            Icon(
+                Icons.Default.ArrowDropDown,
+                "Tipos de $label",
+                Modifier
+                    .size(20.dp)
+                    .clickable { open = true },
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            styles.forEach { (style, text) ->
+                DropdownMenuItem(text = { Text(text) }, onClick = { open = false; onSelect(style) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun <T> ValueMenu(icon: ImageVector, label: String, values: List<Pair<T, String>>, onSelect: (T) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        RibbonButton(icon, label) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            values.forEach { (value, text) ->
+                DropdownMenuItem(text = { Text(text) }, onClick = { open = false; onSelect(value) })
+            }
+        }
     }
 }
 
@@ -1009,19 +1075,26 @@ private fun ToolbarDivider() {
 @Composable
 private fun BlockMenu(block: String, onSelect: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
-    val label = when (block) {
-        "h1" -> "Título 1"; "h2" -> "Título 2"; "h3" -> "Título 3"; else -> "Normal"
-    }
+    val styles = listOf(
+        "p" to "Normal", "h1" to "Título 1", "h2" to "Título 2", "h3" to "Título 3",
+        "blockquote" to "Cita", "pre" to "Código",
+    )
+    val label = styles.firstOrNull { it.first == block }?.second ?: "Normal"
     Box {
-        TextButton(onClick = { open = true }) { Text(label) }
+        TextButton(onClick = { open = true }) {
+            Text(label)
+            Icon(Icons.Default.ArrowDropDown, null)
+        }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            listOf("p" to "Texto normal", "h1" to "Título 1", "h2" to "Título 2", "h3" to "Título 3").forEach { (tag, text) ->
+            styles.forEach { (tag, text) ->
                 DropdownMenuItem(
                     text = {
                         Text(
                             text,
                             fontSize = when (tag) { "h1" -> 24.sp; "h2" -> 20.sp; "h3" -> 18.sp; else -> 16.sp },
-                            fontWeight = if (tag != "p") FontWeight.Bold else FontWeight.Normal,
+                            fontWeight = if (tag.startsWith("h")) FontWeight.Bold else FontWeight.Normal,
+                            fontStyle = if (tag == "blockquote") FontStyle.Italic else FontStyle.Normal,
+                            fontFamily = if (tag == "pre") FontFamily.Monospace else null,
                         )
                     },
                     onClick = { open = false; onSelect(tag) },
