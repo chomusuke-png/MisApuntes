@@ -32,6 +32,13 @@ body {
 #page .textbox { border: 1px solid #d7c1c9; padding: 4pt; margin: 4pt 0; max-width: 100%; box-sizing: border-box; }
 #page .noimg { color: #9a8a90; font-style: italic; }
 #page .fn { font-size: 9pt; }
+/* Documentos de Word: número de lista, texto oculto, marcas invisibles y saltos dentro del párrafo */
+#page .wl { -webkit-user-select: none; user-select: none; }
+#page .wh { display: none; }
+#page .wm { display: inline; }
+#page .wpb { display: block; height: 0; border-top: 1px dashed #c9a9b6; margin: 6pt 0; }
+#page .fn-area { margin-top: 18pt; }
+#page .fn-area hr.fn-sep { width: 30%; margin: 0 0 6pt; border: 0; border-top: 1px solid #999; }
 
 /* Vista de página: hoja con su ancho real, como en Word */
 body.paged { padding: 8px 0 160px; }

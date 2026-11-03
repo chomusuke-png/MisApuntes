@@ -2,4 +2,6 @@
 <paths>
     <!-- Fotos tomadas con la cámara para insertarlas en notas -->
     <cache-path name="camera" path="camera/" />
+    <!-- Documentos guardados como Word para compartirlos -->
+    <cache-path name="share" path="share/" />
 </paths>

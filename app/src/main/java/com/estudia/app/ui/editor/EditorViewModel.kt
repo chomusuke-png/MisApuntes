@@ -1,6 +1,8 @@
 package com.estudia.app.ui.editor
 
 import android.app.Application
+import android.net.Uri
+import java.io.File
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
@@ -58,6 +60,8 @@ class EditorViewModel(app: Application, savedState: SavedStateHandle) : AndroidV
     val content: StateFlow<EditorContent?> = _content
 
     val error = MutableStateFlow<String?>(null)
+    /** Documento en blanco recién creado: se abre listo para escribir. */
+    val isNew: Boolean = repo.consumeNewDocument(docId)
     val state = MutableStateFlow(EditorState())
 
     val recentHighlights = repo.recentColors.recent(ColorKind.HIGHLIGHT)
@@ -79,6 +83,37 @@ class EditorViewModel(app: Application, savedState: SavedStateHandle) : AndroidV
     fun save(html: String) {
         _content.value?.let { _content.value = EditorContent(html, it.baseDir) }
         repo.appScope.launch { repo.saveHtml(docId, html) }
+    }
+
+    /** El último modelo llega antes de que termine de escribirse en disco: se exporta desde aquí. */
+    @Volatile private var lastModel: String? = null
+
+    fun saveModel(json: String) {
+        lastModel = json
+        repo.appScope.launch { repo.saveModel(docId, json) }
+    }
+
+    val messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    /** .docx listo para abrir el menú de compartir. */
+    val shareFile = MutableSharedFlow<File>(extraBufferCapacity = 1)
+    val busy = MutableStateFlow(false)
+
+    fun exportWord(target: Uri) = viewModelScope.launch {
+        val doc = document.value ?: return@launch
+        busy.value = true
+        runCatching { repo.exportDocx(doc, target, lastModel) }
+            .onSuccess { messages.emit("Guardado como Word") }
+            .onFailure { messages.emit("No se pudo guardar: ${it.message}") }
+        busy.value = false
+    }
+
+    fun shareWord() = viewModelScope.launch {
+        val doc = document.value ?: return@launch
+        busy.value = true
+        runCatching { repo.docxForSharing(doc, lastModel) }
+            .onSuccess { shareFile.emit(it) }
+            .onFailure { messages.emit("No se pudo preparar el archivo: ${it.message}") }
+        busy.value = false
     }
 
     fun onState(raw: String) {

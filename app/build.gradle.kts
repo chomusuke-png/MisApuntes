@@ -9,6 +9,7 @@ plugins {
 android {
     namespace = "com.estudia.app"
     compileSdk = 36
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.estudia.app"
@@ -42,6 +43,26 @@ android {
 kotlin {
     jvmToolchain(17)
 }
+
+// Núcleo de Word en Rust (native/, adaptado de WordCraft). Necesita cargo y cargo-ndk:
+//   rustup target add aarch64-linux-android && cargo install cargo-ndk
+val rustJniLibs = layout.buildDirectory.dir("rustJniLibs")
+val buildRust by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Compila native/ como biblioteca de Android"
+    val crate = rootProject.file("native")
+    workingDir = crate
+    inputs.dir(crate.resolve("src"))
+    inputs.files(crate.resolve("Cargo.toml"), crate.resolve("Cargo.lock"))
+    outputs.dir(rustJniLibs)
+    environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+    commandLine(
+        "cargo", "ndk", "-t", "arm64-v8a", "--platform", "26",
+        "-o", rustJniLibs.get().asFile.absolutePath, "build", "--release",
+    )
+}
+android.sourceSets["main"].jniLibs.srcDir(rustJniLibs)
+tasks.named("preBuild") { dependsOn(buildRust) }
 
 ksp {
     arg("room.generateKotlin", "true")

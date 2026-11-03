@@ -1,6 +1,7 @@
 package com.estudia.app.ui.home
 
 import android.widget.Toast
+import com.estudia.app.importers.WordBridge
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -108,6 +109,7 @@ private val MIME_TYPES = arrayOf(
 /** Diálogos de la pantalla; solo uno abierto a la vez. */
 private sealed interface HomeDialog {
     data object NewNote : HomeDialog
+    data object NewDocument : HomeDialog
     data object NewFolder : HomeDialog
     data class RenameFolder(val folder: FolderEntity) : HomeDialog
     data class MoveFolder(val folder: FolderEntity) : HomeDialog
@@ -216,6 +218,11 @@ fun HomeScreen(onOpenDocument: (Long) -> Unit, onOpenSettings: () -> Unit, vm: H
                         leadingIcon = { Icon(Icons.Default.UploadFile, null) },
                         onClick = { addMenu = false; picker.launch(MIME_TYPES) },
                     )
+                    if (WordBridge.available) DropdownMenuItem(
+                        text = { Text("Nuevo documento") },
+                        leadingIcon = { Icon(Icons.Default.Description, null) },
+                        onClick = { addMenu = false; dialog = HomeDialog.NewDocument },
+                    )
                     DropdownMenuItem(
                         text = { Text("Nueva nota") },
                         leadingIcon = { Icon(Icons.AutoMirrored.Filled.NoteAdd, null) },
@@ -270,7 +277,7 @@ fun HomeScreen(onOpenDocument: (Long) -> Unit, onOpenSettings: () -> Unit, vm: H
                 if (documents.isEmpty()) {
                     item {
                         Text(
-                            if (searching) "Sin resultados" else "Toca \"Agregar\" para importar un PDF, Word, TXT o Markdown, o crear una nota.",
+                            if (searching) "Sin resultados" else "Toca \"Agregar\" para importar un PDF, Word, TXT o Markdown, o crear un documento o una nota.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -288,6 +295,9 @@ fun HomeScreen(onOpenDocument: (Long) -> Unit, onOpenSettings: () -> Unit, vm: H
         null -> {}
         HomeDialog.NewNote -> NameDialog("Nueva nota", confirmLabel = "Crear", onDismiss = { dialog = null }) {
             dialog = null; vm.createNote(it)
+        }
+        HomeDialog.NewDocument -> NameDialog("Nuevo documento", confirmLabel = "Crear", onDismiss = { dialog = null }) {
+            dialog = null; vm.createDocument(it)
         }
         HomeDialog.NewFolder -> NameDialog("Nueva carpeta", confirmLabel = "Crear", onDismiss = { dialog = null }) {
             dialog = null; vm.createFolder(it)

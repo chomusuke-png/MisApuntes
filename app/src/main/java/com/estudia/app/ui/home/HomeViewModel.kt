@@ -86,6 +86,12 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
         _openDocument.emit(repo.createNote(title, _currentFolderId.value))
     }
 
+    fun createDocument(title: String) = viewModelScope.launch {
+        runCatching { repo.createWordDocument(title, _currentFolderId.value) }
+            .onSuccess { _openDocument.emit(it) }
+            .onFailure { _messages.emit(it.message ?: "No se pudo crear el documento") }
+    }
+
     fun createFolder(name: String) = viewModelScope.launch {
         repo.folders.insert(FolderEntity(name = name, parentId = _currentFolderId.value))
     }

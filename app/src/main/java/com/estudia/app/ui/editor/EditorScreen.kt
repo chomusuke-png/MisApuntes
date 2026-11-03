@@ -2,6 +2,7 @@ package com.estudia.app.ui.editor
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.view.ViewGroup
@@ -11,6 +12,14 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
+import androidx.compose.material.icons.filled.SaveAlt
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import com.estudia.app.importers.WordBridge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -123,6 +132,8 @@ import android.graphics.Color as AndroidColor
 import kotlin.math.roundToInt
 import android.graphics.Typeface as AndroidTypeface
 
+private const val DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
 /** Familias disponibles en todos los Android (nombre CSS → etiqueta). */
 private val FONTS = listOf(
     "sans-serif" to "Sans Serif",
@@ -209,11 +220,11 @@ fun EditorScreen(
         if (webReady > 0) editor.callRaw(if (placing) "notes.startPlacing()" else "notes.cancelPlacing()")
     }
 
-    // Las notas se abren para escribir; los archivos importados, en modo lectura
+    // Las notas y los documentos recién creados se abren para escribir; los importados, en modo lectura
     var editing by rememberSaveable { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(doc?.type) {
         val type = doc?.type ?: return@LaunchedEffect
-        if (editing == null) editing = type == DocType.NOTE
+        if (editing == null) editing = type == DocType.NOTE || vm.isNew
     }
     // Vista de página (como Word) si el documento trae tamaño de hoja
     var pageView by rememberSaveable { mutableStateOf<Boolean?>(null) }
@@ -224,6 +235,24 @@ fun EditorScreen(
     var picker by remember { mutableStateOf<ColorKind?>(null) }
     var renaming by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+
+    // Guardar / compartir como Word: primero se vacía lo pendiente del editor
+    val snackbar = remember { SnackbarHostState() }
+    val busy by vm.busy.collectAsState()
+    val wordSaver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(DOCX_MIME)) { uri ->
+        uri?.let { editor.flush { vm.exportWord(it) } }
+    }
+    LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
+    LaunchedEffect(Unit) {
+        vm.shareFile.collect { f ->
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", f)
+            val send = Intent(Intent.ACTION_SEND)
+                .setType(DOCX_MIME)
+                .putExtra(Intent.EXTRA_STREAM, uri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            context.startActivity(Intent.createChooser(send, "Compartir como Word"))
+        }
+    }
 
     val quickHighlight = recentHighlights.firstOrNull() ?: HIGHLIGHT_PRESETS.first()
     fun highlight(color: Int?) {
@@ -259,6 +288,7 @@ fun EditorScreen(
 
     Scaffold(
         modifier = Modifier.imePadding(),
+        snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             // Herramientas justo debajo de la barra superior
             Column {
@@ -303,6 +333,21 @@ fun EditorScreen(
                                 onClick = { menu = false; vm.togglePin() },
                             )
                             DropdownMenuItem(text = { Text("Renombrar") }, onClick = { menu = false; renaming = true })
+                            if (WordBridge.available) {
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Guardar como Word (.docx)") },
+                                    leadingIcon = { Icon(Icons.Default.SaveAlt, null) },
+                                    enabled = !busy,
+                                    onClick = { menu = false; wordSaver.launch("${doc?.title ?: "Documento"}.docx") },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Compartir como Word") },
+                                    leadingIcon = { Icon(Icons.Default.Share, null) },
+                                    enabled = !busy,
+                                    onClick = { menu = false; editor.flush { vm.shareWord() } },
+                                )
+                            }
                         }
                     }
                 },
@@ -356,6 +401,7 @@ fun EditorScreen(
                                     onNotePlaced = { placing = false; pendingAnchor = it },
                                     onNoteMoved = vm::moveStickyNote,
                                     onScroll = { y, max -> vm.onScroll(y); docScroll = y to max },
+                                    onModel = vm::saveModel,
                                 ),
                                 initialScroll = vm.scrollY,
                                 onLoaded = { webReady++ },
@@ -487,10 +533,13 @@ internal class EditorBridge(
     private val onNotePlaced: (String) -> Unit = {},
     private val onNoteMoved: (Long, String) -> Unit = { _, _ -> },
     private val onScroll: (Int, Int) -> Unit = { _, _ -> },
+    private val onModel: (String) -> Unit = {},
 ) {
     private val main = Handler(Looper.getMainLooper())
 
     @JavascriptInterface fun save(html: String) = onSave(html)
+    /** Qué cambió respecto al Word original, para poder guardarlo como .docx. */
+    @JavascriptInterface fun model(json: String) = onModel(json)
     @JavascriptInterface fun onState(json: String) = onState.invoke(json)
     @JavascriptInterface fun openNote(id: String) { id.toLongOrNull()?.let { main.post { onNoteTap(it) } } }
     @JavascriptInterface fun placeNote(anchor: String) { main.post { onNotePlaced(anchor) } }

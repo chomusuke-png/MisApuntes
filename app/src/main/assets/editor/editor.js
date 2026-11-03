@@ -89,6 +89,8 @@
   function restore(i) {
     hIndex = i;
     page.innerHTML = history[i].html;
+    // La foto ya trae sus propias marcas de cambio: no se marca nada por reemplazarla
+    if (observer) observer.takeRecords();
     setCaret(history[i].caret);
     scheduleSave();
     queueReport();
@@ -119,6 +121,233 @@
     if (html === lastSaved) return;
     lastSaved = html;
     Android.save(html);
+    sendModel();
+  }
+
+  // ---------- Modelo para guardar como Word ----------
+  // Los bloques que vienen de Word llevan data-b (su ruta en el original), los trozos de texto
+  // data-r (su run) y los objetos data-o. Lo que se modifica queda marcado con data-d: al guardar,
+  // lo no marcado se copia tal cual del original y lo marcado se rehace desde lo que se ve.
+
+  const fromWord = page.dataset.src === 'wc';
+  const FONT_SIZES = [0, 8, 10, 12, 13.5, 18, 24, 36];
+
+  function markDirty(node) {
+    for (let n = node; n && n !== page; n = n.parentNode) {
+      if (n.nodeType === 1 && n.hasAttribute('data-b') && !n.hasAttribute('data-d')) n.setAttribute('data-d', '1');
+    }
+  }
+
+  const observer = typeof MutationObserver === 'undefined' ? null : new MutationObserver(function (records) {
+    records.forEach(function (r) {
+      if (r.type === 'attributes' && (r.attributeName === 'data-d' || r.attributeName === 'data-anchor')) return;
+      if (r.target === page) {
+        r.addedNodes.forEach(markDirty);
+        return;
+      }
+      markDirty(r.target);
+    });
+  });
+  if (observer) observer.observe(page, { subtree: true, childList: true, characterData: true, attributes: true });
+
+  function hexColor(c) {
+    if (!c || c === 'inherit' || c === 'initial') return null;
+    if (c === 'transparent') return '';
+    if (c[0] === '#') return c.length === 4 ? '#' + c[1] + c[1] + c[2] + c[2] + c[3] + c[3] : c.toUpperCase();
+    const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/.exec(c);
+    if (!m) return null;
+    if (m[4] !== undefined && parseFloat(m[4]) === 0) return '';
+    return '#' + [m[1], m[2], m[3]].map(function (x) { return (+x).toString(16).padStart(2, '0'); }).join('').toUpperCase();
+  }
+
+  function sizePt(s) {
+    const v = parseFloat(s);
+    if (isNaN(v)) return null;
+    if (/pt$/.test(s)) return v;
+    if (/px$/.test(s)) return v * 0.75;
+    return null;
+  }
+
+  /** Aspecto de un texto: lo declarado más cerca gana. withBlock: incluye el estilo del párrafo. */
+  function look(node, block, withBlock) {
+    const f = {};
+    for (let n = node.parentNode; n && n !== page; n = n.parentNode) {
+      if (n === block && !withBlock) break;
+      if (n.nodeType !== 1) continue;
+      const s = n.style, tag = n.tagName;
+      if (f.b === undefined) {
+        if (s.fontWeight) f.b = s.fontWeight === 'bold' || s.fontWeight === 'bolder' || parseInt(s.fontWeight, 10) >= 600;
+        else if (tag === 'B' || tag === 'STRONG') f.b = true;
+      }
+      if (f.i === undefined) {
+        if (s.fontStyle) f.i = s.fontStyle !== 'normal';
+        else if (tag === 'I' || tag === 'EM') f.i = true;
+      }
+      const deco = s.textDecorationLine || s.textDecoration || '';
+      if (f.u === undefined) {
+        if (/underline/.test(deco) || tag === 'U') f.u = true;
+        else if (/none/.test(deco)) f.u = false;
+      }
+      if (f.s === undefined) {
+        if (/line-through/.test(deco) || tag === 'S' || tag === 'STRIKE' || tag === 'DEL') f.s = true;
+        else if (/none/.test(deco)) f.s = false;
+      }
+      if (f.va === undefined) {
+        if (tag === 'SUP' || s.verticalAlign === 'super') f.va = 'sup';
+        else if (tag === 'SUB' || s.verticalAlign === 'sub') f.va = 'sub';
+      }
+      if (f.c === undefined) {
+        let c = hexColor(s.color);
+        if (c === null && tag === 'FONT') c = hexColor(n.getAttribute('color'));
+        if (c !== null) f.c = c;
+      }
+      if (f.bg === undefined && n !== block) {
+        const bg = hexColor(s.backgroundColor);
+        if (bg !== null) f.bg = bg;
+      }
+      if (f.font === undefined) {
+        const fam = s.fontFamily || (tag === 'FONT' ? n.getAttribute('face') : '');
+        if (fam) f.font = fam.split(',')[0].replace(/['"]/g, '').trim();
+      }
+      if (f.sz === undefined) {
+        let sz = s.fontSize ? sizePt(s.fontSize) : null;
+        if (sz === null && tag === 'FONT' && n.getAttribute('size')) sz = FONT_SIZES[parseInt(n.getAttribute('size'), 10)] || null;
+        if (sz !== null) f.sz = Math.round(sz * 2) / 2;
+      }
+    }
+    if (withBlock && fromWord) {
+      // Del párrafo de Word se conoce todo su aspecto: lo no declarado es "sin"
+      if (f.b === undefined) f.b = false;
+      if (f.i === undefined) f.i = false;
+      if (f.u === undefined) f.u = false;
+      if (f.s === undefined) f.s = false;
+      if (f.va === undefined) f.va = '';
+      if (f.c === undefined) f.c = '';
+      if (f.bg === undefined) f.bg = '';
+    }
+    return f;
+  }
+
+  /** Párrafo (hijo directo de la hoja o de una celda) que contiene a node. */
+  function blockOf(node) {
+    for (let n = node; n && n !== page; n = n.parentNode) {
+      const parent = n.parentNode;
+      if (n.nodeType === 1 && parent && (parent === page || parent.tagName === 'TD')) return n;
+    }
+    return null;
+  }
+
+  function within(node, block, selector) {
+    const el = node.nodeType === 1 ? node : node.parentNode;
+    const found = el && el.closest(selector);
+    return found && block.contains(found) ? found : null;
+  }
+
+  function segments(block, nestedLists) {
+    // data-h: párrafo que cambió de estilo; su aspecto base lo da el estilo nuevo
+    const withBlock = !fromWord || (block.hasAttribute('data-b') && !block.dataset.h);
+    const segs = [];
+    function push(seg) {
+      const last = segs[segs.length - 1];
+      if (seg.t !== undefined && last && last.t !== undefined && last.r === seg.r && last.hid === seg.hid &&
+          JSON.stringify(last.f) === JSON.stringify(seg.f)) {
+        last.t += seg.t;
+      } else {
+        segs.push(seg);
+      }
+    }
+    (function walk(node) {
+      for (let n = node.firstChild; n; n = n.nextSibling) {
+        if (n.nodeType === 3) {
+          if (!n.nodeValue) continue;
+          const run = within(n, block, '[data-r]');
+          const seg = { t: n.nodeValue, r: run ? run.dataset.r : null, f: look(n, block, withBlock) };
+          if (within(n, block, '.wh')) seg.hid = true;
+          push(seg);
+          continue;
+        }
+        if (n.nodeType !== 1) continue;
+        const tag = n.tagName;
+        if (n.classList.contains('wl')) continue;
+        if (n.dataset.o) { push({ o: n.dataset.o }); continue; }
+        if (n.dataset.pb) { push({ pb: parseInt(n.dataset.pb, 10) || 1 }); continue; }
+        if (tag === 'BR') { push({ br: true }); continue; }
+        if (tag === 'IMG') {
+          const ratio = n.naturalWidth ? n.naturalHeight / n.naturalWidth : 0.75;
+          let w = sizePt(n.style.width || '') || (n.naturalWidth ? n.naturalWidth * 0.75 : 300);
+          w = Math.min(w, 450);
+          push({ img: n.getAttribute('src'), w: w, ih: sizePt(n.style.height || '') || w * ratio });
+          continue;
+        }
+        if ((tag === 'UL' || tag === 'OL') && nestedLists) { nestedLists.push(n); continue; }
+        if (/^(P|DIV|H[1-6]|LI|BLOCKQUOTE)$/.test(tag) && segs.length) push({ br: true });
+        walk(n);
+      }
+    })(block);
+    // El <br> final solo mantiene abierta la línea vacía
+    if (segs.length && segs[segs.length - 1].br) segs.pop();
+    return segs;
+  }
+
+  function align(el) {
+    return el.style.textAlign || (el.getAttribute('align') || null);
+  }
+
+  let listCount = 0;
+
+  function listModel(list, level, out) {
+    const id = ++listCount;
+    const kind = list.tagName.toLowerCase();
+    for (let li = list.firstElementChild; li; li = li.nextElementSibling) {
+      if (li.tagName !== 'LI') continue;
+      const nested = [];
+      out.push({ p: { src: li.dataset.b || null, tag: 'li', list: kind, list_id: id, level: level, align: align(li), segs: segments(li, nested) } });
+      nested.forEach(function (n) { listModel(n, level + 1, out); });
+    }
+  }
+
+  function blocksOf(container, counts, out) {
+    for (let n = container.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3) {
+        if (n.nodeValue.trim()) out.push({ p: { tag: 'p', segs: [{ t: n.nodeValue, f: {} }] } });
+        continue;
+      }
+      if (n.nodeType !== 1 || n.dataset.x || n.id === 'notes-layer') continue;
+      const tag = n.tagName;
+      const b = n.dataset.b;
+      if (b && !n.hasAttribute('data-d') && counts[b] === 1) { out.push({ k: b }); continue; }
+      if (tag === 'HR') { out.push({ p: { tag: 'p', segs: [{ pb: 1 }] } }); continue; }
+      if (tag === 'TABLE') {
+        const cells = [];
+        n.querySelectorAll(':scope > tbody > tr > td, :scope > tr > td, :scope > thead > tr > td, :scope > tbody > tr > th').forEach(function (td) {
+          const inner = [];
+          blocksOf(td, counts, inner);
+          cells.push({ c: td.dataset.c || '', blocks: inner });
+        });
+        out.push({ t: { src: b || null, cells: cells } });
+        continue;
+      }
+      if (tag === 'UL' || tag === 'OL') { listModel(n, 0, out); continue; }
+      if (/^(DIV|SECTION|BLOCKQUOTE)$/.test(tag) && n.querySelector('p,h1,h2,h3,h4,h5,h6,div,table,ul,ol')) {
+        blocksOf(n, counts, out);
+        continue;
+      }
+      out.push({ p: { src: b || null, tag: /^H[1-6]$/.test(tag) ? tag.toLowerCase() : 'p', align: align(n), segs: segments(n, null) } });
+    }
+  }
+
+  function model() {
+    const counts = {};
+    page.querySelectorAll('[data-b]').forEach(function (el) { counts[el.dataset.b] = (counts[el.dataset.b] || 0) + 1; });
+    listCount = 0;
+    const out = [];
+    blocksOf(page, counts, out);
+    return JSON.stringify({ blocks: out });
+  }
+
+  function sendModel() {
+    if (typeof Android.model !== 'function') return;
+    try { Android.model(model()); } catch (e) { /* el modelo es opcional: sin él se exporta lo último guardado */ }
   }
 
   function scheduleSave() {
@@ -505,7 +734,25 @@
 
   window.editor = {
     cmd: function (name, val) { exec(name, val); afterCommand(); },
-    block: function (tag) { exec('formatBlock', '<' + tag + '>'); afterCommand(); },
+    block: function (tag) {
+      // formatBlock crea un elemento nuevo: se le pasa el origen en Word del párrafo que reemplaza
+      const before = blockOf(savedRange ? savedRange.startContainer : anchorElement());
+      const src = before && before.dataset.b;
+      exec('formatBlock', '<' + tag + '>');
+      const after = blockOf(anchorElement());
+      if (src && after && !after.dataset.b) {
+        after.dataset.b = src;
+        after.setAttribute('data-d', '1');
+      }
+      // El aspecto del párrafo pasa a ser el del nuevo estilo (título o normal), no el anterior
+      if (after && after.dataset.b) {
+        after.dataset.h = '1';
+        ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'color', 'textDecoration', 'backgroundColor'].forEach(function (p) {
+          after.style[p] = '';
+        });
+      }
+      afterCommand();
+    },
     fontSize: function (pt) { pendingFontPt = pt; exec('fontSize', '7'); afterCommand(); },
     color: function (c) {
       exec('foreColor', c || CLEAR_COLOR);
@@ -551,5 +798,6 @@
   fit();
   snapshot();
   lastSaved = getHtml();
+  setTimeout(sendModel, 0);
   queueReport();
 })();

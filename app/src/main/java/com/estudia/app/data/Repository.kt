@@ -13,7 +13,14 @@ import com.estudia.app.importers.MarkdownImporter
 import com.estudia.app.importers.PdfExporter
 import com.estudia.app.importers.PdfTextExtractor
 import com.estudia.app.importers.PlainTextImporter
+import com.estudia.app.importers.WordBridge
 import com.estudia.app.rich.RichDocument
+import android.util.Log
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -98,6 +105,11 @@ class Repository(private val context: Context, private val db: AppDatabase) {
         }
 
         val title = name.substringBeforeLast('.').ifBlank { name }
+        store(title, type, folderId, original, tmp, html)
+    }
+
+    /** Registra el documento y mueve lo convertido (HTML e imágenes) a su carpeta definitiva. */
+    private suspend fun store(title: String, type: DocType, folderId: Long?, original: File, tmp: File, html: String?): Long {
         val id = documents.insert(
             DocumentEntity(
                 title = title,
@@ -117,16 +129,45 @@ class Repository(private val context: Context, private val db: AppDatabase) {
         } else {
             tmp.deleteRecursively()
         }
-        id
+        return id
     }
+
+    /** Documento de Word en blanco (hoja, márgenes y estilos de Word), editable y guardable como .docx. */
+    suspend fun createWordDocument(title: String, folderId: Long?): Long = withContext(Dispatchers.IO) {
+        check(WordBridge.available) { "Los documentos de Word no están disponibles en este equipo" }
+        val original = File(originalsDir, "${UUID.randomUUID()}.docx")
+        val tmp = File(context.filesDir, "content/tmp-${UUID.randomUUID()}").apply { mkdirs() }
+        val html = try {
+            WordBridge.toDocx("", "", "", tmp.path, original.path)
+            WordBridge.toHtml(original.path, "docx", tmp.path)
+        } catch (e: Exception) {
+            original.delete()
+            tmp.deleteRecursively()
+            throw e
+        }
+        store(title, DocType.DOCX, folderId, original, tmp, html).also { newDocuments += it }
+    }
+
+    private val newDocuments = java.util.Collections.synchronizedSet(HashSet<Long>())
+
+    /** true la primera vez que se pregunta por un documento recién creado. */
+    fun consumeNewDocument(id: Long): Boolean = newDocuments.remove(id)
 
     private fun convert(type: DocType, file: File, dir: File): String? = when (type) {
         DocType.PDF -> null
-        DocType.DOCX -> DocxImporter.import(file, dir)
-        DocType.DOC -> DocImporter.import(file)
+        DocType.DOCX -> wordHtml(file, "docx", dir) ?: DocxImporter.import(file, dir)
+        DocType.DOC -> wordHtml(file, "doc", dir) ?: DocImporter.import(file)
         DocType.MD -> MarkdownImporter.import(file).toHtml()
         DocType.TXT -> PlainTextImporter.import(file).toHtml()
         DocType.NOTE -> RichDocument().toHtml()
+    }
+
+    /** Conversión con el núcleo de Word; null si no está disponible o falla (se usa la de Kotlin). */
+    private fun wordHtml(file: File, ext: String, dir: File): String? {
+        if (!WordBridge.available) return null
+        return runCatching { WordBridge.toHtml(file.path, ext, dir.path) }
+            .onFailure { Log.w("Repository", "Conversión nativa falló: ${file.name}", it) }
+            .getOrNull()
     }
 
     suspend fun createNote(title: String, folderId: Long?, html: String = RichDocument().toHtml()): Long =
@@ -177,16 +218,70 @@ class Repository(private val context: Context, private val db: AppDatabase) {
     }
 
     private suspend fun writeHtml(id: Long, html: String) = writeLock.withLock {
-        val dir = contentDir(id).apply { mkdirs() }
-        val target = File(dir, "doc.html")
-        // Escritura atómica: si la app se cierra a mitad no se corrompe el archivo
-        val tmp = File(dir, "doc.html.tmp")
-        tmp.writeText(html)
+        val target = writeAtomic(File(contentDir(id), "doc.html"), html)
+        documents.setContentPath(id, target.relativeTo(context.filesDir).path)
+    }
+
+    /** Escritura atómica: si la app se cierra a mitad no se corrompe el archivo. */
+    private fun writeAtomic(target: File, text: String): File {
+        target.parentFile?.mkdirs()
+        val tmp = File(target.parentFile, "${target.name}.tmp")
+        tmp.writeText(text)
         if (!tmp.renameTo(target)) {
             target.delete()
             tmp.renameTo(target)
         }
-        documents.setContentPath(id, target.relativeTo(context.filesDir).path)
+        return target
+    }
+
+    // ---------- Guardar como Word ----------
+
+    private fun modelFile(id: Long) = File(contentDir(id), "model.json")
+
+    /** Lo que el editor cambió respecto al original (ver editor.js). */
+    suspend fun saveModel(docId: Long, json: String) = withContext(Dispatchers.IO) {
+        writeLock.withLock { writeAtomic(modelFile(docId), json) }
+    }
+
+    /** Escribe el .docx del documento: el original con lo editado, o uno nuevo para notas y textos. */
+    private suspend fun writeDocx(doc: DocumentEntity, model: String?, out: File) = withContext(Dispatchers.IO) {
+        check(WordBridge.available) { "Guardar como Word no está disponible en este equipo" }
+        val original = doc.originalPath?.let(::file)?.takeIf { it.exists() && (doc.type == DocType.DOCX || doc.type == DocType.DOC) }
+        val json = model ?: writeLock.withLock { modelFile(doc.id).takeIf { it.exists() }?.readText() } ?: if (original != null) "" else plainModel(doc)
+        out.parentFile?.mkdirs()
+        WordBridge.toDocx(original?.path.orEmpty(), doc.type.name.lowercase(), json, contentDir(doc.id).path, out.path)
+    }
+
+    /** Modelo mínimo (solo el texto) para un documento que nunca se abrió en el editor. */
+    private fun plainModel(doc: DocumentEntity): String {
+        val html = doc.contentPath?.let(::file)?.takeIf { it.exists() }?.readText().orEmpty()
+        val blocks = htmlToPlainText(html).split('\n').map { line ->
+            buildJsonObject {
+                put("p", buildJsonObject {
+                    put("tag", "p")
+                    put("segs", buildJsonArray { add(buildJsonObject { put("t", line) }) })
+                })
+            }
+        }
+        return buildJsonObject { put("blocks", JsonArray(blocks)) }.toString()
+    }
+
+    /** Copia .docx en la caché, con el nombre del documento, para compartirla. */
+    suspend fun docxForSharing(doc: DocumentEntity, model: String? = null): File = withContext(Dispatchers.IO) {
+        val dir = File(context.cacheDir, "share").apply { deleteRecursively(); mkdirs() }
+        val name = doc.title.replace(Regex("[\\\\/:*?\"<>|]"), "_").take(80).ifBlank { "Documento" }
+        File(dir, "$name.docx").also { writeDocx(doc, model, it) }
+    }
+
+    suspend fun exportDocx(doc: DocumentEntity, target: Uri, model: String? = null) = withContext(Dispatchers.IO) {
+        val tmp = File(context.cacheDir, "export-${doc.id}.docx")
+        try {
+            writeDocx(doc, model, tmp)
+            context.contentResolver.openOutputStream(target, "wt")?.use { out -> tmp.inputStream().use { it.copyTo(out) } }
+                ?: error("No se pudo escribir el archivo")
+        } finally {
+            tmp.delete()
+        }
     }
 
     // ---------- Resaltados de PDF ----------
