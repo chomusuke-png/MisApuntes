@@ -714,9 +714,16 @@ internal fun createEditorWebView(
         settings.setSupportZoom(true)
         webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true
-            override fun onPageFinished(view: WebView, url: String?) = onLoaded()
+            override fun onPageFinished(view: WebView, url: String?) {
+                view.evaluateJavascript("window.editor && editor.fit()", null)
+                onLoaded()
+            }
         }
         addJavascriptInterface(bridge, "Android")
+        // Cada vez que el WebView cambia de ancho (al aparecer, al girar) la hoja se vuelve a ajustar
+        addOnLayoutChangeListener { v, left, _, right, _, oldLeft, _, oldRight, _ ->
+            if (right - left != oldRight - oldLeft) (v as WebView).evaluateJavascript("window.editor && editor.fit()", null)
+        }
         loadDataWithBaseURL(baseDir, page, "text/html", "utf-8", null)
     }
 }

@@ -975,12 +975,23 @@
 
   // ---------- Vista ----------
 
+  let fitRetry = null;
+
+  /** Ancho real de la pantalla. Al abrir, Android puede informar un ancho provisorio (980 px). */
+  function screenWidth() {
+    return document.documentElement.clientWidth || window.innerWidth || 0;
+  }
+
   function fit() {
+    clearTimeout(fitRetry);
     if (document.body.classList.contains('paged')) {
       const widthPt = parseFloat(page.dataset.w || '0');
       if (widthPt > 0) {
-        const widthPx = widthPt * 4 / 3;
-        document.body.style.zoom = Math.min(1, (window.innerWidth - 12) / widthPx);
+        const sw = screenWidth();
+        // Todavía sin medida: se reintenta en cuanto el WebView tenga su tamaño
+        if (sw < 50) { fitRetry = setTimeout(fit, 50); return; }
+        // La hoja ocupa todo el ancho de la pantalla (agrandando o achicando), con un borde mínimo
+        document.body.style.zoom = (sw - 8) / (widthPt * 4 / 3);
         return;
       }
     }
@@ -1603,6 +1614,8 @@
       queueNotes();
       queuePaginate(0);
     },
+    /** Ajusta la hoja al ancho de la pantalla (Kotlin lo pide cuando el WebView ya tiene tamaño). */
+    fit: function () { fit(); queueNotes(); queueScroll(); },
     /** Tamaño y márgenes de la hoja, en puntos (pestaña Diseño). */
     setPage: function (w, h, mt, mr, mb, ml) {
       if (!(w > 0 && h > 0)) return;
@@ -1625,7 +1638,8 @@
   setTimeout(sendModel, 0);
   queueReport();
   queuePaginate(0);
-  window.addEventListener('load', function () { queuePaginate(0); });
+  window.addEventListener('load', function () { fit(); queuePaginate(0); });
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', fit);
   // Imágenes que terminan de cargar cambian la altura del texto
   page.addEventListener('load', function () { queuePaginate(); }, true);
 })();
