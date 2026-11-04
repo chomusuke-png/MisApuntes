@@ -33,6 +33,17 @@ data class EditorState(
     val painter: Boolean = false,
     /** Imagen seleccionada (null si no hay). */
     val image: ImageState? = null,
+    /** Editando el encabezado ("h") o el pie ("f"); null en el cuerpo. */
+    val hf: String? = null,
+    /** Primera página diferente y pares e impares diferentes. */
+    val hfFirst: Boolean = false,
+    val hfOddEven: Boolean = false,
+    /** Numeración de páginas ("1", "i", "I", "a", "A") y número de la primera. */
+    val pageFmt: String = "1",
+    val pageStart: Int = 1,
+    /** Distancia del encabezado y del pie al borde, en puntos. */
+    val hfTop: Float = 36f,
+    val hfBottom: Float = 36f,
     /** Tabla donde está el cursor (null fuera de una tabla). */
     val table: TableState? = null,
     /** Hoja: tamaño y márgenes en puntos. */
@@ -60,6 +71,22 @@ data class PageState(
     val mb: Float = 72f,
     val ml: Float = 72f,
 )
+
+/** Número de página: alineación y formato ("n" = 1, "nofm" = Página 1 de N). */
+@Serializable
+data class PageNumber(val align: String = "center", val fmt: String = "n")
+
+/** Encabezado o pie de todas las páginas, como lo edita la barra. rich: trae imágenes o tablas. */
+@Serializable
+data class HeaderPart(
+    val lines: List<String> = emptyList(),
+    val align: String = "left",
+    val num: PageNumber? = null,
+    val rich: Boolean = false,
+)
+
+@Serializable
+data class HeadersState(val h: HeaderPart = HeaderPart(), val f: HeaderPart = HeaderPart())
 
 /** Tabla del cursor: tamaño, celdas tocadas y formato de la celda actual. */
 @Serializable

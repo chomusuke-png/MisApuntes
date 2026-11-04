@@ -6,6 +6,9 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.Height
+import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.CallMerge
@@ -71,6 +74,8 @@ import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -334,13 +339,20 @@ fun EditorScreen(
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
     // La misma galería sirve para insertar una imagen nueva o reemplazar la seleccionada
     var replacingImage by remember { mutableStateOf(false) }
+    var pickingLogo by remember { mutableStateOf(false) }
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         uri?.let(vm::importImage)
     }
     LaunchedEffect(Unit) {
         vm.imageReady.collect {
-            editor.call(if (replacingImage) "imageTools.replace" else "editor.insertImage", it)
+            when {
+                // Diseño "Logo y título" del encabezado/pie abierto
+                pickingLogo -> editor.call("headerFooter.preset", "logo", doc?.title.orEmpty(), it)
+                replacingImage -> editor.call("imageTools.replace", it)
+                else -> editor.call("editor.insertImage", it)
+            }
             replacingImage = false
+            pickingLogo = false
         }
     }
     LaunchedEffect(Unit) {
@@ -361,7 +373,48 @@ fun EditorScreen(
     }
     fun exit() = editor.flush(onBack)
 
+    // Encabezado ("h") y pie ("f"): se editan en la hoja; "n": cuadro del número de página
+    var pageNumber by remember { mutableStateOf<HeadersState?>(null) }
+    fun openHeaders(kind: String) {
+        if (editing != true) return
+        if (kind == "n") {
+            editor.eval("headerFooter.get()") { raw ->
+                pageNumber = runCatching { Json { ignoreUnknownKeys = true }.decodeFromString(HeadersState.serializer(), raw) }.getOrNull()
+                    ?: HeadersState()
+            }
+            return
+        }
+        // En vista móvil no hay hojas: primero se pasa a vista de página
+        if (pageView == true) {
+            editor.call("headerFooter.enter", kind)
+        } else {
+            pageView = true
+            scope.launch {
+                delay(450)
+                editor.call("headerFooter.enter", kind)
+            }
+        }
+    }
+    pageNumber?.let { st ->
+        PageNumberDialog(
+            current = st.h.num?.let { "h" to it } ?: st.f.num?.let { "f" to it },
+            numbering = format.pageFmt,
+            start = format.pageStart,
+            onDismiss = { pageNumber = null },
+            onApply = { c ->
+                pageNumber = null
+                pageView = true
+                c.where?.let { editor.call("headerFooter.number", it, c.align, c.fmt) }
+                if (c.numbering != format.pageFmt || c.start != format.pageStart) {
+                    editor.call("headerFooter.numbering", c.numbering, c.start)
+                }
+            },
+        )
+    }
+
     BackHandler { if (placing) placing = false else exit() }
+    // Atrás mientras se edita el encabezado: vuelve al cuerpo (registrado después, gana)
+    BackHandler(enabled = format.hf != null) { editor.call("headerFooter.exit") }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -472,6 +525,12 @@ fun EditorScreen(
                     onFind = { finding = true },
                     onLayoutChange = { pageView = true },
                     onStats = { editor.eval("docStats()") { stats = it } },
+                    onHeaderFooter = ::openHeaders,
+                    docTitle = doc?.title.orEmpty(),
+                    onLogo = {
+                        pickingLogo = true
+                        gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
                 )
                 format.hasSelection -> HighlightBar(
                     colors = (recentHighlights + HIGHLIGHT_PRESETS).distinct().take(8),
@@ -498,7 +557,7 @@ fun EditorScreen(
             }
         },
         floatingActionButton = {
-            if (!placing && content != null && !format.hasSelection) AddNoteFab { placing = true }
+            if (!placing && content != null && !format.hasSelection && format.hf == null) AddNoteFab { placing = true }
         },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
@@ -531,6 +590,7 @@ fun EditorScreen(
                                     onFound = { cur, total -> found = cur to total },
                                     onRotateImage = vm::rotateImage,
                                     onPages = { pages = it },
+                                    onHeaderFooter = ::openHeaders,
                                 ),
                                 initialScroll = vm.scrollY,
                                 onLoaded = { webReady++ },
@@ -670,6 +730,7 @@ internal class EditorBridge(
     private val onFound: (Int, Int) -> Unit = { _, _ -> },
     private val onRotateImage: (String, Int) -> String = { _, _ -> "" },
     private val onPages: (PageGeometry) -> Unit = {},
+    private val onHeaderFooter: (String) -> Unit = {},
 ) {
     private val main = Handler(Looper.getMainLooper())
 
@@ -683,6 +744,8 @@ internal class EditorBridge(
     @JavascriptInterface fun pages(count: Int, step: Double, top: Double, viewport: Double) {
         main.post { onPages(PageGeometry(count, step.toFloat(), top.toFloat(), viewport.toFloat())) }
     }
+    /** Doble toque en el margen de una hoja: "h" encabezado, "f" pie. */
+    @JavascriptInterface fun headerFooter(kind: String) { main.post { onHeaderFooter(kind) } }
     @JavascriptInterface fun onState(json: String) = onState.invoke(json)
     @JavascriptInterface fun openNote(id: String) { id.toLongOrNull()?.let { main.post { onNoteTap(it) } } }
     @JavascriptInterface fun placeNote(anchor: String) { main.post { onNotePlaced(anchor) } }
@@ -761,14 +824,21 @@ internal fun FormattingToolbar(
     onReplaceImage: (() -> Unit)? = null,
     /** Se cambió la hoja: la pantalla pasa a vista de página para que se vea. */
     onLayoutChange: (() -> Unit)? = null,
+    /** Título del documento, para los diseños de encabezado. */
+    docTitle: String = "",
+    /** Elegir el logo del diseño "Logo y título". */
+    onLogo: (() -> Unit)? = null,
+    /** Encabezado ("h"), pie ("f") o número de página ("n"); solo en documentos. */
+    onHeaderFooter: ((String) -> Unit)? = null,
 ) {
     // Cinta como la de Word: pestañas arriba y sus herramientas debajo
     var tab by rememberSaveable { mutableStateOf(RibbonTab.HOME) }
     val image = format.image
     val tabs = RibbonTab.entries.filter {
         when (it) {
-            RibbonTab.REVIEW -> onFind != null || onStats != null
-            RibbonTab.LAYOUT -> onLayoutChange != null
+            RibbonTab.REVIEW -> (onFind != null || onStats != null) && format.hf == null
+            RibbonTab.LAYOUT -> onLayoutChange != null && format.hf == null
+            RibbonTab.HEADER -> format.hf != null
             RibbonTab.IMAGE -> image != null
             RibbonTab.TABLE -> format.table != null
             else -> true
@@ -782,6 +852,11 @@ internal fun FormattingToolbar(
     // Al salir de la tabla su pestaña desaparece
     LaunchedEffect(format.table != null) {
         if (format.table == null && tab == RibbonTab.TABLE) tab = RibbonTab.HOME
+    }
+    // Al abrir el encabezado o pie aparece su pestaña; al cerrarlo se vuelve a Inicio
+    LaunchedEffect(format.hf) {
+        if (format.hf != null) tab = RibbonTab.HEADER
+        else if (tab == RibbonTab.HEADER) tab = RibbonTab.HOME
     }
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Column {
@@ -803,7 +878,8 @@ internal fun FormattingToolbar(
             ) {
                 when (tab) {
                     RibbonTab.HOME -> HomeTools(format, quickHighlight, recentHighlights, editor, onHighlight, onPick)
-                    RibbonTab.INSERT -> InsertTools(editor, onInsertImage)
+                    RibbonTab.INSERT -> InsertTools(editor, onInsertImage, onHeaderFooter, inHeader = format.hf != null)
+                    RibbonTab.HEADER -> HeaderTools(format, editor, docTitle, onPageNumber = { onHeaderFooter?.invoke("n") }, onLogo = onLogo)
                     RibbonTab.PARAGRAPH -> ParagraphTools(format, editor)
                     RibbonTab.IMAGE -> if (image != null) ImageTools(image, editor, onReplaceImage)
                     RibbonTab.TABLE -> format.table?.let { TableTools(it, editor) }
@@ -829,6 +905,7 @@ private enum class RibbonTab(val label: String) {
     REVIEW("Revisar"),
     IMAGE("Imagen"),
     TABLE("Tabla"),
+    HEADER("Encabezado y pie"),
 }
 
 /** Colores de sombreado de celda (los claros de Word). */
@@ -1254,7 +1331,13 @@ private fun HomeTools(
 
 /** Insertar: imagen, tabla, enlace, saltos, línea, símbolos y fecha. */
 @Composable
-private fun InsertTools(editor: WebEditor, onInsertImage: (() -> Unit)?) {
+private fun InsertTools(
+    editor: WebEditor,
+    onInsertImage: (() -> Unit)?,
+    onHeaderFooter: ((String) -> Unit)? = null,
+    /** Editando el encabezado o pie: sin saltos de página ni volver a abrirlos. */
+    inHeader: Boolean = false,
+) {
     var tableDialog by remember { mutableStateOf(false) }
     var linkDialog by remember { mutableStateOf(false) }
 
@@ -1262,11 +1345,17 @@ private fun InsertTools(editor: WebEditor, onInsertImage: (() -> Unit)?) {
     RibbonButton(Icons.Default.TableChart, "Tabla") { tableDialog = true }
     RibbonButton(Icons.Default.Link, "Enlace") { linkDialog = true }
     ToolbarDivider()
-    RibbonButton(Icons.Default.InsertPageBreak, "Salto de página") { editor.call("editor.insertPageBreak") }
+    if (!inHeader) RibbonButton(Icons.Default.InsertPageBreak, "Salto de página") { editor.call("editor.insertPageBreak") }
     RibbonButton(Icons.Default.HorizontalRule, "Línea") { editor.call("editor.insertRule") }
     ToolbarDivider()
     SymbolMenu { editor.call("editor.insertText", it) }
     DateMenu { editor.call("editor.insertText", it) }
+    if (onHeaderFooter != null && !inHeader) {
+        ToolbarDivider()
+        RibbonButton(Icons.Default.VerticalAlignTop, "Encabezado") { onHeaderFooter("h") }
+        RibbonButton(Icons.Default.VerticalAlignBottom, "Pie de página") { onHeaderFooter("f") }
+        RibbonButton(Icons.Default.Numbers, "Nº de página") { onHeaderFooter("n") }
+    }
 
     if (tableDialog) TableDialog(onDismiss = { tableDialog = false }) { rows, cols ->
         tableDialog = false
@@ -1625,5 +1714,156 @@ private fun SizeMenu(current: Float, onSelect: (Int) -> Unit) {
                 )
             }
         }
+    }
+}
+
+private val ALIGN_CHOICES = listOf("left" to "Izquierda", "center" to "Centro", "right" to "Derecha")
+
+@Composable
+private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Text(label)
+    }
+}
+
+/** Numeraciones de página de Word. */
+private val PAGE_FORMATS = listOf("1" to "1, 2, 3…", "i" to "i, ii, iii…", "I" to "I, II, III…", "a" to "a, b, c…", "A" to "A, B, C…")
+
+/** Lo que se eligió en el cuadro de número de página. where: "h", "f", "c" (cursor), "" (quitar) o null (no moverlo). */
+private class PageNumberChoice(val where: String?, val align: String, val fmt: String, val numbering: String, val start: Int)
+
+/** Número de página: dónde va, alineación, texto, numeración y desde qué número empieza. */
+@Composable
+private fun PageNumberDialog(
+    current: Pair<String, PageNumber>?,
+    numbering: String,
+    start: Int,
+    onDismiss: () -> Unit,
+    onApply: (PageNumberChoice) -> Unit,
+) {
+    // Con un número ya puesto, por defecto solo se cambia la numeración
+    var where by remember { mutableStateOf(if (current != null) "keep" else "f") }
+    var align by remember { mutableStateOf(current?.second?.align?.takeIf { a -> ALIGN_CHOICES.any { it.first == a } } ?: "center") }
+    var fmt by remember { mutableStateOf(current?.second?.fmt ?: "n") }
+    var pf by remember { mutableStateOf(numbering) }
+    var first by remember { mutableIntStateOf(start) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Número de página") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text("Posición", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                if (current != null) OptionRow("Dejarlo donde está", where == "keep") { where = "keep" }
+                OptionRow("Arriba (encabezado)", where == "h") { where = "h" }
+                OptionRow("Abajo (pie de página)", where == "f") { where = "f" }
+                OptionRow("Donde está el cursor", where == "c") { where = "c" }
+                if (where == "h" || where == "f") {
+                    Text("Alineación", fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+                    Row {
+                        ALIGN_CHOICES.forEach { (value, label) ->
+                            Row(Modifier.clickable { align = value }, verticalAlignment = Alignment.CenterVertically) {
+                                RadioButton(selected = align == value, onClick = { align = value })
+                                Text(label, fontSize = 13.sp, modifier = Modifier.padding(end = 4.dp))
+                            }
+                        }
+                    }
+                }
+                if (where != "keep") {
+                    Text("Texto", fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+                    OptionRow("Solo el número", fmt == "n") { fmt = "n" }
+                    OptionRow("Página 1 de N", fmt == "nofm") { fmt = "nofm" }
+                }
+                Text("Numeración", fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+                PAGE_FORMATS.forEach { (value, label) -> OptionRow(label, pf == value) { pf = value } }
+                Stepper("Empezar en", first, 0..999) { first = it }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onApply(PageNumberChoice(where.takeIf { it != "keep" }, align, fmt, pf, first)) }) { Text("Aceptar") }
+        },
+        dismissButton = {
+            Row {
+                if (current != null) TextButton(onClick = { onApply(PageNumberChoice("", align, fmt, pf, first)) }) { Text("Quitar") }
+                TextButton(onClick = onDismiss) { Text("Cancelar") }
+            }
+        },
+    )
+}
+
+private const val CM = 28.3465f
+
+/** Distancia del encabezado y del pie al borde de la hoja. */
+@Composable
+private fun DistanceDialog(top: Float, bottom: Float, onDismiss: () -> Unit, onApply: (Float, Float) -> Unit) {
+    var h by remember { mutableFloatStateOf(top / CM) }
+    var f by remember { mutableFloatStateOf(bottom / CM) }
+    val es = Locale.forLanguageTag("es")
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Distancia al borde") },
+        text = {
+            Column {
+                Text("Encabezado desde arriba: ${"%.1f".format(es, h)} cm", fontSize = 13.sp)
+                Slider(value = h, onValueChange = { h = (it * 10).roundToInt() / 10f }, valueRange = 0f..5f)
+                Text("Pie desde abajo: ${"%.1f".format(es, f)} cm", fontSize = 13.sp)
+                Slider(value = f, onValueChange = { f = (it * 10).roundToInt() / 10f }, valueRange = 0f..5f)
+            }
+        },
+        confirmButton = { TextButton(onClick = { onApply(h * CM, f * CM) }) { Text("Aceptar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+/** Encabezado y pie (mientras se edita uno en la hoja): diseños, número de página, fecha, opciones, distancia, cambiar y cerrar. */
+@Composable
+private fun HeaderTools(format: EditorState, editor: WebEditor, title: String, onPageNumber: () -> Unit, onLogo: (() -> Unit)?) {
+    val header = format.hf == "h"
+    var distance by remember { mutableStateOf(false) }
+    fun preset(name: String) = editor.call("headerFooter.preset", name, title, null)
+    ChoiceMenu(
+        Icons.Default.Dashboard, "Diseños",
+        listOfNotNull(
+            Choice("En blanco", "Borra lo que tiene", false) { preset("blank") },
+            Choice("Tres columnas", "Izquierda, centro y derecha", false) { preset("three") },
+            Choice("Título del documento", title.ifBlank { null }, false) { preset("title") },
+            onLogo?.let { Choice("Logo y título", "Elige una imagen", false, it) },
+        ),
+    )
+    RibbonButton(Icons.Default.Numbers, "Nº de página", onPageNumber)
+    DateMenu { editor.call("editor.insertText", it) }
+    ToolbarDivider()
+    OptionCheck("Primera página diferente", format.hfFirst) { editor.call("headerFooter.options", it, format.hfOddEven) }
+    OptionCheck("Pares e impares diferentes", format.hfOddEven) { editor.call("headerFooter.options", format.hfFirst, it) }
+    RibbonButton(Icons.Default.Height, "Distancia") { distance = true }
+    ToolbarDivider()
+    RibbonButton(
+        if (header) Icons.Default.VerticalAlignBottom else Icons.Default.VerticalAlignTop,
+        if (header) "Ir al pie" else "Ir al encabezado",
+    ) { editor.call("headerFooter.swap") }
+    RibbonButton(Icons.Default.Close, "Cerrar") { editor.call("headerFooter.exit") }
+
+    if (distance) DistanceDialog(format.hfTop, format.hfBottom, onDismiss = { distance = false }) { h, f ->
+        distance = false
+        editor.call("headerFooter.distance", h, f)
+    }
+}
+
+@Composable
+private fun OptionCheck(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .clickable { onChange(!checked) }
+            .padding(end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = onChange)
+        Text(label, fontSize = 12.sp, maxLines = 1)
     }
 }

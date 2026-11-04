@@ -3,6 +3,9 @@
   'use strict';
 
   const page = document.getElementById('page');
+  // Dónde actúan las herramientas: la hoja, o el encabezado/pie mientras se edita (hfLive)
+  let ed = page;
+  let hfLive = null;
   const MAX_HISTORY = 150;
   const CLEAR_COLOR = 'rgb(1, 2, 3)';
 
@@ -68,6 +71,7 @@
   function snapshot() {
     clearTimeout(typingTimer);
     typingTimer = null;
+    if (hfLive) hfSync();
     const html = cleanInner();
     if (hIndex >= 0 && history[hIndex].html === html) {
       history[hIndex].caret = caret();
@@ -91,7 +95,7 @@
     page.innerHTML = history[i].html;
     // La foto ya trae sus propias marcas de cambio: no se marca nada por reemplazarla
     if (observer) observer.takeRecords();
-    setCaret(history[i].caret);
+    if (hfLive) hfReload(); else setCaret(history[i].caret);
     scheduleSave();
     queueReport();
     queueNotes();
@@ -131,6 +135,7 @@
   function save() {
     clearTimeout(saveTimer);
     saveTimer = null;
+    if (hfLive) hfSync();
     // Las marcas de cambio tienen que quedar también en el HTML guardado
     if (observer) markChanges(observer.takeRecords());
     const html = getHtml();
@@ -149,7 +154,7 @@
   const FONT_SIZES = [0, 8, 10, 12, 13.5, 18, 24, 36];
 
   function markDirty(node) {
-    for (let n = node; n && n !== page; n = n.parentNode) {
+    for (let n = node; n && n !== page && n !== hfLive; n = n.parentNode) {
       if (n.nodeType === 1 && n.hasAttribute('data-b') && !n.hasAttribute('data-d')) n.setAttribute('data-d', '1');
     }
   }
@@ -159,7 +164,7 @@
       if (r.type === 'attributes' && (r.attributeName === 'data-d' || r.attributeName === 'data-anchor')) return;
       // Marcar una imagen como seleccionada no cambia el documento
       if (r.type === 'attributes' && r.attributeName === 'class' && r.target.tagName === 'IMG') return;
-      if (r.target === page) {
+      if (r.target === page || r.target === hfLive) {
         r.addedNodes.forEach(markDirty);
         return;
       }
@@ -190,7 +195,7 @@
   /** Aspecto de un texto: lo declarado más cerca gana. withBlock: incluye el estilo del párrafo. */
   function look(node, block, withBlock) {
     const f = {};
-    for (let n = node.parentNode; n && n !== page; n = n.parentNode) {
+    for (let n = node.parentNode; n && n !== page && n !== hfLive; n = n.parentNode) {
       if (n === block && !withBlock) break;
       if (n.nodeType !== 1) continue;
       const s = n.style, tag = n.tagName;
@@ -251,9 +256,9 @@
 
   /** Párrafo (hijo directo de la hoja o de una celda) que contiene a node. */
   function blockOf(node) {
-    for (let n = node; n && n !== page; n = n.parentNode) {
+    for (let n = node; n && n !== page && n !== hfLive; n = n.parentNode) {
       const parent = n.parentNode;
-      if (n.nodeType === 1 && parent && (parent === page || parent.tagName === 'TD')) return n;
+      if (n.nodeType === 1 && parent && (parent === page || parent === hfLive || parent.tagName === 'TD')) return n;
     }
     return null;
   }
@@ -292,6 +297,8 @@
         if (n.nodeType !== 1) continue;
         const tag = n.tagName;
         if (n.classList.contains('wl') || n.dataset.x) continue;
+        // Número de página o total insertado en el editor (los del original traen data-o)
+        if (n.classList.contains('wpg') && !n.dataset.o) { push({ fld: n.dataset.f === 'NUMPAGES' ? 'NUMPAGES' : 'PAGE' }); continue; }
         if (n.dataset.o) {
           // Imagen del original: puede venir con otro tamaño
           if (tag === 'IMG') push({ o: n.dataset.o, w: sizePt(n.style.width || '') || undefined, ih: sizePt(n.style.height || '') || undefined });
@@ -345,7 +352,7 @@
     const r = savedRange;
     if (!r) return [];
     const out = [];
-    page.querySelectorAll(LEAF_BLOCKS).forEach(function (el) {
+    ed.querySelectorAll(LEAF_BLOCKS).forEach(function (el) {
       if (el.closest('[data-x]') || el.querySelector(LEAF_BLOCKS)) return;
       if (r.intersectsNode(el)) out.push(el);
     });
@@ -473,16 +480,28 @@
     return { src: src || null, rows: rows, grid: m.cols, bd: n.dataset.bd ? n.dataset.bd === '1' : null };
   }
 
+  /** Cuántas veces aparece cada ruta de Word en root (el cuerpo no cuenta las del encabezado/pie). */
+  function countRefs(root) {
+    const counts = {};
+    root.querySelectorAll('[data-b]').forEach(function (el) {
+      if (root === page && el.closest('.whf')) return;
+      counts[el.dataset.b] = (counts[el.dataset.b] || 0) + 1;
+    });
+    return counts;
+  }
+
   function model() {
     // Cambios recién hechos que el observador aún no procesó (se guardó en el mismo instante)
     if (observer) markChanges(observer.takeRecords());
-    const counts = {};
-    page.querySelectorAll('[data-b]').forEach(function (el) { counts[el.dataset.b] = (counts[el.dataset.b] || 0) + 1; });
+    const counts = countRefs(page);
     listCount = 0;
     const out = [];
     blocksOf(page, counts, out);
     const result = { blocks: out };
     if (parseFloat(page.dataset.w || '0') > 0) result.page = pageSetup();
+    const hf = headersModel();
+    if (hf) result.hf = hf;
+    if (page.dataset.hfo) result.hfo = hfSettings();
     return JSON.stringify(result);
   }
 
@@ -504,7 +523,7 @@
   // ---------- Formato ----------
 
   function restoreRange() {
-    page.focus({ preventScroll: true });
+    ed.focus({ preventScroll: true });
     if (!savedRange) return;
     const sel = window.getSelection();
     sel.removeAllRanges();
@@ -536,26 +555,26 @@
   /** execCommand solo conoce 7 tamaños: se usa el 7 como marca y se reemplaza por el tamaño real. */
   function fixFontSizes() {
     if (pendingFontPt == null) return;
-    page.querySelectorAll('font[size="7"]').forEach(function (el) {
+    ed.querySelectorAll('font[size="7"]').forEach(function (el) {
       const span = document.createElement('span');
       span.style.fontSize = pendingFontPt + 'pt';
       while (el.firstChild) span.appendChild(el.firstChild);
       el.replaceWith(span);
     });
-    page.querySelectorAll('[style*="xxx-large"]').forEach(function (el) {
+    ed.querySelectorAll('[style*="xxx-large"]').forEach(function (el) {
       el.style.fontSize = pendingFontPt + 'pt';
     });
   }
 
   /** Quita una propiedad de estilo aplicada con un color marcador (no hay comando "quitar color"). */
   function clearMarked(prop) {
-    page.querySelectorAll('[style]').forEach(function (el) {
+    ed.querySelectorAll('[style]').forEach(function (el) {
       if (el.style[prop] === CLEAR_COLOR) {
         el.style[prop] = '';
         if (!el.getAttribute('style') && el.tagName === 'SPAN') unwrap(el);
       }
     });
-    page.querySelectorAll('font[color="#010203"]').forEach(unwrap);
+    ed.querySelectorAll('font[color="#010203"]').forEach(unwrap);
   }
 
   // ---------- Mayúsculas / minúsculas ----------
@@ -566,11 +585,11 @@
     const sel = window.getSelection();
     if (!sel.rangeCount || sel.isCollapsed) return;
     const range = sel.getRangeAt(0);
-    if (!page.contains(range.commonAncestorContainer)) return;
+    if (!ed.contains(range.commonAncestorContainer)) return;
     if (typingTimer) snapshot();
 
     const parts = [];
-    const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
     let n;
     while ((n = walker.nextNode())) {
       if (!range.intersectsNode(n)) continue;
@@ -679,7 +698,7 @@
 
   function imageCommand(fn) {
     const img = selectedImg;
-    if (!img || !page.contains(img) || readOnly) return;
+    if (!img || !ed.contains(img) || readOnly) return;
     if (typingTimer) snapshot();
     fn(img);
     afterCommand();
@@ -827,10 +846,10 @@
   /** Celda del cursor y rectángulo de celdas que toca la selección. */
   function tableTarget() {
     const r = savedRange;
-    if (!r || !page.contains(r.startContainer)) return null;
+    if (!r || !ed.contains(r.startContainer)) return null;
     const el = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentNode;
     const td = el && el.closest('td,th');
-    if (!td || !page.contains(td)) return null;
+    if (!td || !ed.contains(td)) return null;
     const t = td.closest('table');
     const m = readTable(t);
     const first = m.cells.find(function (c) { return c.td === td; });
@@ -876,7 +895,7 @@
     clearGaps();
     if (observer) observer.takeRecords();
     const focus = fn(target);
-    if (focus && page.contains(focus)) caretIn(focus);
+    if (focus && ed.contains(focus)) caretIn(focus);
     afterCommand();
   }
 
@@ -1311,7 +1330,7 @@
   function formatAt(el) {
     const cs = getComputedStyle(el);
     let underline = false, strike = false;
-    for (let n = el; n && n !== page; n = n.parentNode) {
+    for (let n = el; n && n !== ed; n = n.parentNode) {
       const d = getComputedStyle(n).textDecorationLine || '';
       if (d.indexOf('underline') >= 0) underline = true;
       if (d.indexOf('line-through') >= 0) strike = true;
@@ -1366,13 +1385,13 @@
   function anchorElement() {
     const sel = window.getSelection();
     let node = sel.rangeCount ? sel.getRangeAt(0).startContainer : null;
-    if (!node || !page.contains(node)) return null;
+    if (!node || !ed.contains(node)) return null;
     if (node.nodeType === Node.TEXT_NODE) node = node.parentNode;
     return node;
   }
 
   function backgroundAt(el) {
-    for (let n = el; n && n !== page; n = n.parentNode) {
+    for (let n = el; n && n !== ed; n = n.parentNode) {
       const bg = n.style && n.style.backgroundColor;
       if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') return bg;
     }
@@ -1409,8 +1428,15 @@
       align: state('justifyCenter') ? 'center' : state('justifyRight') ? 'right' : state('justifyFull') ? 'justify' : 'left',
       ul: state('insertUnorderedList'),
       ol: state('insertOrderedList'),
-      hasSelection: sel.rangeCount > 0 && !sel.isCollapsed && page.contains(sel.getRangeAt(0).commonAncestorContainer),
-      image: selectedImg && page.contains(selectedImg) ? {
+      hasSelection: sel.rangeCount > 0 && !sel.isCollapsed && ed.contains(sel.getRangeAt(0).commonAncestorContainer),
+      hf: hfLive ? hfLive.dataset.kind : null,
+      hfFirst: hfOptions().tp,
+      hfOddEven: hfOptions().eo,
+      pageFmt: page.dataset.pf || '1',
+      pageStart: pageStart(),
+      hfTop: Math.round(hfDistances().hd / PX * 10) / 10,
+      hfBottom: Math.round(hfDistances().fd / PX * 10) / 10,
+      image: selectedImg && ed.contains(selectedImg) ? {
         pct: imagePct(selectedImg),
         align: align(blockOf(selectedImg) || selectedImg) || 'left',
         w: Math.round(imageWidthPt(selectedImg)),
@@ -1524,15 +1550,20 @@
     }
     if (!(parseFloat(page.dataset.w || '0') > 0)) { applyPage(LETTER); fit(); }
     const ps = pageSetup();
-    const H = ps.h * PX, MT = ps.mt * PX, MB = ps.mb * PX, STEP = H + GAP_PX;
-    const usable = H - MT - MB;
+    const H = ps.h * PX, STEP = H + GAP_PX;
+    // Un encabezado o pie más alto que su margen empuja el texto (como en Word)
+    const hfH = hfHeights(ps);
+    function mtOf(i) { return Math.max(ps.mt * PX, hfH[hfFor('h', i)] || 0); }
+    function mbOf(i) { return Math.max(ps.mb * PX, hfH[hfFor('f', i)] || 0); }
+    const MT = mtOf(0);
+    const usable = H - Math.max(mtOf(0), mtOf(1), mtOf(2)) - Math.max(mbOf(0), mbOf(1), mbOf(2));
     // Una imagen nunca más alta que el área útil de la hoja
     sheetEl.style.setProperty('--usable-h', usable + 'px');
     const scale = page.offsetWidth ? page.getBoundingClientRect().width / page.offsetWidth : 1;
     function y(v) { return (v - page.getBoundingClientRect().top) / scale; }
     function pageAt(v) { return Math.max(0, Math.floor(v / STEP)); }
-    function bottomOf(i) { return i * STEP + H - MB; }
-    function topOf(i) { return i * STEP + MT; }
+    function bottomOf(i) { return i * STEP + H - mbOf(i); }
+    function topOf(i) { return i * STEP + mtOf(i); }
 
     /** Separador antes de node que lleva su borde superior a target (corrige márgenes que colapsan). */
     function pushTo(node, gap, target) {
@@ -1643,11 +1674,13 @@
       });
     }
 
-    function placeBlock(el) {
+    function placeBlock(el, again) {
       if (el.matches('hr.pb')) { breakAfter(el); return; }
       const r = el.getBoundingClientRect();
       if (!r.height) return;
       const top = y(r.top), bottom = y(r.bottom), i = pageAt(top);
+      // Empieza dentro de un encabezado alto: baja hasta donde termina
+      if (!again && top < topOf(i) - 0.5) { pushTo(el, makeGap('div'), topOf(i)); placeBlock(el, true); return; }
       if (el.tagName === 'TABLE') { placeTable(el); return; }
       if (top > bottomOf(i) || (bottom > bottomOf(i) + 0.5 && bottom - top <= usable && top > topOf(i) + 1)) {
         // Cabe en una hoja: pasa entero a la siguiente
@@ -1674,6 +1707,13 @@
       html += '<div class="wsheet" style="top:' + p * STEP + 'px;height:' + H + 'px"></div>';
     }
     pagesLayer.innerHTML = html;
+    drawHeaders(ps);
+    // Números de página escritos en el texto: el de la hoja donde quedan
+    page.querySelectorAll('.wpg').forEach(function (f) {
+      if (f.closest('.whf')) return;
+      const v = f.dataset.f === 'NUMPAGES' ? String(pageCount) : formatPage(pageAt(y(f.getBoundingClientRect().top)) + pageStart(), page.dataset.pf || '1');
+      if (f.textContent !== v) f.textContent = v;
+    });
     lastStep = STEP;
     if (observer) observer.takeRecords();
     queueNotes();
@@ -1692,34 +1732,494 @@
     Android.pages(pageCount, lastStep * scale, pr.top + window.scrollY, window.innerHeight);
   }
 
-  // ---------- Eventos ----------
+  // ---------- Encabezado y pie de página ----------
+  // Cada uno es un texto aparte, como el cuerpo: vive oculto dentro de la hoja (div.whf, data-hf =
+  // h/f + d todas las páginas o 1 la primera) para guardarse con el HTML, y cada hoja dibuja una
+  // copia en su margen con su número de página. Para editarlo se abre sobre su hoja (hfLive) y
+  // todas las herramientas actúan ahí (ed); el cuerpo queda atenuado. data-hfd: cambió.
 
-  page.addEventListener('beforeinput', function (e) {
-    if (e.inputType === 'historyUndo') { e.preventDefault(); undo(); return; }
-    if (e.inputType === 'historyRedo') { e.preventDefault(); redo(); return; }
-    // En modo lectura solo se permite dar formato (resaltar), no escribir ni borrar
-    if (readOnly && e.inputType.indexOf('format') !== 0) e.preventDefault();
-  });
+  let hfId = null;
+  let hfPage = 0;
+  const hfObserver = typeof MutationObserver === 'undefined' ? null : new MutationObserver(markChanges);
 
-  page.addEventListener('input', function () {
+  function hfDiv(id) {
+    return Array.prototype.find.call(page.children, function (c) { return c.classList.contains('whf') && c.dataset.hf === id; }) || null;
+  }
+
+  function ensureHf(id) {
+    let div = hfDiv(id);
+    if (!div) {
+      div = document.createElement('div');
+      div.className = 'whf';
+      div.dataset.x = '1';
+      div.dataset.hf = id;
+      div.setAttribute('contenteditable', 'false');
+      div.hidden = true;
+      page.appendChild(div);
+    }
+    return div;
+  }
+
+  const HF_IDS = ['hd', 'h1', 'he', 'fd', 'f1', 'fe'];
+
+  /** Primera página diferente y pares e impares diferentes. */
+  function hfOptions() {
+    // HTML de antes de guardar la opción: la primera página distinta se reconoce por su encabezado
+    const tp = page.dataset.tp ? page.dataset.tp === '1' : !!(hfDiv('h1') || hfDiv('f1'));
+    return { tp: tp, eo: page.dataset.eo === '1' };
+  }
+
+  /** Cuál se ve en la hoja i: el de la primera página, el de las pares o el de todas. */
+  function hfFor(kind, i) {
+    const o = hfOptions();
+    if (i === 0 && o.tp) return kind + '1';
+    const n = i + pageStart();
+    if (o.eo && n % 2 === 0) return kind + 'e';
+    return kind + 'd';
+  }
+
+  /** Todo lo que se guarda de encabezados y pies en la sección de Word. */
+  function hfSettings() {
+    const o = hfOptions(), d = hfDistances();
+    return { tp: o.tp, eo: o.eo, fmt: page.dataset.pf || '1', start: pageStart(), hd: d.hd / PX, fd: d.fd / PX };
+  }
+
+  const HF_LABELS ={ d: '', 1: ' de primera página', e: ' de página par' };
+
+  function hfLabel(id) {
+    const base = id[0] === 'h' ? 'Encabezado' : 'Pie de página';
+    if (id[1] === 'd' && hfOptions().eo) return base + ' de página impar';
+    return base + (HF_LABELS[id[1]] || '');
+  }
+
+  function hfHasContent(el) {
+    return !!el && (!!el.textContent.replace(/[\s​]/g, '') || !!el.querySelector('img,table,.wpg'));
+  }
+
+  function htmlText(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function hfDistances() {
+    return { hd: (parseFloat(page.dataset.hd || '36') || 36) * PX, fd: (parseFloat(page.dataset.fd || '36') || 36) * PX };
+  }
+
+  function pageStart() {
+    const n = parseInt(page.dataset.pn || '1', 10);
+    return isNaN(n) ? 1 : n;
+  }
+
+  /** Número de página con la numeración elegida: 1, i, I, a o A. */
+  function formatPage(n, pf) {
+    if (pf === 'i' || pf === 'I') {
+      if (n <= 0 || n > 3999) return String(n);
+      const R = [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']];
+      let s = '';
+      R.forEach(function (p) { while (n >= p[0]) { s += p[1]; n -= p[0]; } });
+      return pf === 'I' ? s.toUpperCase() : s;
+    }
+    if (pf === 'a' || pf === 'A') {
+      // Como Word: a … z, aa … zz, aaa …
+      if (n <= 0) return String(n);
+      const s = String.fromCharCode(97 + (n - 1) % 26).repeat(Math.floor((n - 1) / 26) + 1);
+      return pf === 'A' ? s.toUpperCase() : s;
+    }
+    return String(n);
+  }
+
+  function fillNumbers(root, i, total) {
+    const pf = page.dataset.pf || '1';
+    root.querySelectorAll('.wpg').forEach(function (f) {
+      const v = f.dataset.f === 'NUMPAGES' ? String(total) : formatPage(i + pageStart(), pf);
+      if (f.textContent !== v) f.textContent = v;
+    });
+  }
+
+  /** Hasta dónde llegan encabezado y pie (desde el borde), para que el texto no se les encime. */
+  function hfHeights(ps) {
+    const out = {};
+    const d = hfDistances();
+    const box = document.createElement('div');
+    box.className = 'hfx';
+    box.style.cssText = 'position:absolute;visibility:hidden;left:0;top:0;width:' + (ps.w - ps.ml - ps.mr) * PX + 'px';
+    sheetEl.appendChild(box);
+    HF_IDS.forEach(function (id) {
+      const src = hfLive && id === hfId ? hfLive : hfDiv(id);
+      if (!hfHasContent(src)) return;
+      box.innerHTML = src.innerHTML;
+      out[id] = (id[0] === 'h' ? d.hd : d.fd) + box.offsetHeight + 6;
+    });
+    box.remove();
+    return out;
+  }
+
+  function drawHeaders(ps) {
+    const sheets = pagesLayer.children;
+    const d = hfDistances();
+    for (let i = 0; i < sheets.length; i++) {
+      ['h', 'f'].forEach(function (k) {
+        const id = hfFor(k, i);
+        // El que se está editando ya está a la vista
+        if (hfLive && id === hfId && i === hfPage) return;
+        const src = hfDiv(id);
+        if (!hfHasContent(src)) return;
+        const box = document.createElement('div');
+        box.className = (k === 'h' ? 'whead' : 'wfoot') + ' hfx';
+        box.style.left = ps.ml * PX + 'px';
+        box.style.right = ps.mr * PX + 'px';
+        if (k === 'h') box.style.top = d.hd + 'px';
+        else box.style.bottom = d.fd + 'px';
+        box.innerHTML = src.innerHTML;
+        fillNumbers(box, i, sheets.length);
+        sheets[i].appendChild(box);
+      });
+    }
+    if (hfLive) { hfPlace(); fillNumbers(hfLive, hfPage, sheets.length); }
+  }
+
+  /** Lleva el encabezado/pie que se edita a su lugar en su hoja. */
+  function hfPlace() {
+    if (!hfLive) return;
+    const ps = pageSetup(), H = ps.h * PX, d = hfDistances();
+    const STEP = lastStep || H + GAP_PX;
+    hfLive.style.left = ps.ml * PX + 'px';
+    hfLive.style.width = (ps.w - ps.ml - ps.mr) * PX + 'px';
+    const base = hfPage * STEP;
+    hfLive.style.top = (hfLive.dataset.kind === 'h' ? base + d.hd : base + H - d.fd - hfLive.offsetHeight) + 'px';
+  }
+
+  /** Copia lo escrito al encabezado/pie guardado. */
+  function hfSync() {
+    if (!hfLive) return;
+    if (hfObserver) markChanges(hfObserver.takeRecords());
+    const src = ensureHf(hfId);
+    const copy = hfLive.cloneNode(true);
+    copy.querySelectorAll('img.wsel').forEach(function (img) {
+      img.classList.remove('wsel');
+      if (!img.className) img.removeAttribute('class');
+    });
+    const html = copy.innerHTML.replace(/​/g, '');
+    if (src.innerHTML !== html) {
+      src.innerHTML = html;
+      src.dataset.hfd = '1';
+    }
+  }
+
+  function caretAtEnd(root) {
+    const leaves = root.querySelectorAll(LEAF_BLOCKS);
+    const target = leaves.length ? leaves[leaves.length - 1] : root;
+    const r = document.createRange();
+    r.selectNodeContents(target);
+    r.collapse(false);
+    const s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+    savedRange = r.cloneRange();
+  }
+
+  function onEditInput() {
     fixFontSizes();
+    if (hfLive) { hfSync(); hfPlace(); }
     scheduleSnapshot();
     scheduleSave();
     queueReport();
     queueNotes();
     queuePaginate();
-  });
+  }
 
-  page.addEventListener('click', function (e) {
+  function onEditBeforeInput(e) {
+    if (e.inputType === 'historyUndo') { e.preventDefault(); undo(); return; }
+    if (e.inputType === 'historyRedo') { e.preventDefault(); redo(); return; }
+    // En modo lectura solo se permite dar formato (resaltar), no escribir ni borrar
+    if (readOnly && e.inputType.indexOf('format') !== 0) e.preventDefault();
+  }
+
+  function onEditClick(e) {
     // Los enlaces no navegan dentro del editor
     if (e.target.closest && e.target.closest('a')) e.preventDefault();
     // Tocar una imagen la selecciona (aparece la pestaña Imagen); tocar otra cosa la suelta
     selectImage(!readOnly && e.target.tagName === 'IMG' ? e.target : null);
+  }
+
+  /** Abre el encabezado ('h') o pie ('f') de la hoja i para escribir en él. */
+  function hfEnter(kind, i) {
+    if (readOnly || !paged() || (kind !== 'h' && kind !== 'f')) return false;
+    if (hfLive) hfExit(true);
+    if (typingTimer) snapshot();
+    i = Math.max(0, Math.min(pageCount - 1, i | 0));
+    hfId = hfFor(kind, i);
+    hfPage = i;
+    const src = ensureHf(hfId);
+    selectImage(null);
+    hfLive = document.createElement('div');
+    hfLive.className = 'whf-live hfx';
+    hfLive.dataset.kind = kind;
+    hfLive.dataset.label = hfLabel(hfId);
+    hfLive.setAttribute('contenteditable', 'true');
+    hfLive.setAttribute('spellcheck', 'false');
+    hfLive.innerHTML = hfHasContent(src) ? src.innerHTML : '<p><br></p>';
+    hfLive.addEventListener('beforeinput', onEditBeforeInput);
+    hfLive.addEventListener('input', onEditInput);
+    hfLive.addEventListener('click', onEditClick);
+    hfLive.addEventListener('load', function () { hfPlace(); queuePaginate(); }, true);
+    sheetEl.appendChild(hfLive);
+    if (hfObserver) hfObserver.observe(hfLive, { subtree: true, childList: true, characterData: true, attributes: true });
+    page.setAttribute('contenteditable', 'false');
+    document.body.classList.add('hf-editing');
+    ed = hfLive;
+    hfPlace();
+    hfLive.focus({ preventScroll: true });
+    caretAtEnd(hfLive);
+    queuePaginate(0);
+    queueReport();
+    return true;
+  }
+
+  /** Vuelve al cuerpo. quiet: sin guardar ni repaginar (se abre otro enseguida). */
+  function hfExit(quiet) {
+    if (!hfLive) return;
+    hfSync();
+    if (hfObserver) hfObserver.disconnect();
+    selectImage(null);
+    hfLive.remove();
+    hfLive = null;
+    hfId = null;
+    ed = page;
+    savedRange = null;
+    page.setAttribute('contenteditable', 'true');
+    document.body.classList.remove('hf-editing');
+    if (quiet) return;
+    snapshot();
+    scheduleSave();
+    queuePaginate(0);
+    queueReport();
+  }
+
+  /** Tras deshacer: el encabezado abierto vuelve a mostrar lo guardado. */
+  function hfReload() {
+    if (!hfLive) return;
+    const src = hfDiv(hfId);
+    hfLive.innerHTML = hfHasContent(src) ? src.innerHTML : '<p><br></p>';
+    if (hfObserver) hfObserver.takeRecords();
+    caretAtEnd(hfLive);
+    hfPlace();
+  }
+
+  /** Hoja que se ve en el centro de la pantalla. */
+  function visiblePage() {
+    if (!lastStep) return 0;
+    const pr = page.getBoundingClientRect();
+    const scale = page.offsetWidth ? pr.width / page.offsetWidth : 1;
+    const mid = (window.innerHeight / 2 - pr.top) / scale;
+    return Math.max(0, Math.min(pageCount - 1, Math.floor(mid / lastStep)));
+  }
+
+  const ALIGNS = ['left', 'center', 'right'];
+  const PAGE_FIELD = '<span class="wo wpg" data-f="PAGE" contenteditable="false">1</span>';
+  const TOTAL_FIELD = '<span class="wo wpg" data-f="NUMPAGES" contenteditable="false">1</span>';
+
+  function numberBlocks(root) {
+    return Array.prototype.filter.call(root.querySelectorAll(LEAF_BLOCKS), function (b) {
+      return b.querySelector('.wpg') && !b.querySelector(LEAF_BLOCKS);
+    });
+  }
+
+  window.headerFooter = {
+    enter: function (kind, i) { return hfEnter(kind, i == null ? visiblePage() : i); },
+    exit: function () { hfExit(false); },
+    /** Del encabezado al pie de la misma hoja (o al revés). */
+    swap: function () { if (hfLive) hfEnter(hfLive.dataset.kind === 'h' ? 'f' : 'h', hfPage); },
+    /**
+     * Primera página diferente (tp) y pares e impares diferentes (eo). Al encenderlas, la
+     * primera página o las pares empiezan en blanco, como en Word; al apagarlas se guardan igual.
+     */
+    options: function (tp, eo) {
+      if (readOnly) return;
+      if (typingTimer) snapshot();
+      const kind = hfLive ? hfLive.dataset.kind : null;
+      const at = hfPage;
+      if (hfLive) hfExit(true);
+      page.dataset.tp = tp ? '1' : '0';
+      page.dataset.eo = eo ? '1' : '0';
+      page.dataset.hfo = '1';
+      ['h', 'f'].forEach(function (k) {
+        if (tp) ensureHf(k + '1');
+        if (eo) ensureHf(k + 'e');
+      });
+      snapshot();
+      scheduleSave();
+      // Sigue editando la misma hoja, ahora con el encabezado que le toca
+      if (kind) hfEnter(kind, at);
+      queuePaginate(0);
+      queueReport();
+    },
+    /** Dónde está el número de página, para la barra. */
+    get: function () {
+      if (hfLive) hfSync();
+      function num(id) {
+        const d = hfDiv(id);
+        const b = d && numberBlocks(d)[0];
+        return b ? { align: b.style.textAlign || 'left', fmt: b.querySelector('.wpg[data-f="NUMPAGES"]') ? 'nofm' : 'n' } : null;
+      }
+      const o = hfOptions();
+      return JSON.stringify({ h: { num: num('hd') }, f: { num: num('fd') }, tp: o.tp, eo: o.eo });
+    },
+    /** Numeración (1, i, I, a, A) y número de la primera página. */
+    numbering: function (pf, start) {
+      if (readOnly) return;
+      if (typingTimer) snapshot();
+      page.dataset.pf = ['1', 'i', 'I', 'a', 'A'].indexOf(pf) >= 0 ? pf : '1';
+      page.dataset.pn = String(Math.max(0, Math.min(9999, start | 0)));
+      page.dataset.hfo = '1';
+      snapshot();
+      scheduleSave();
+      queuePaginate(0);
+      queueReport();
+    },
+    /** Distancia del encabezado y del pie al borde de la hoja, en puntos. */
+    distance: function (hd, fd) {
+      if (readOnly) return;
+      if (typingTimer) snapshot();
+      const ok = function (v) { return Math.max(0, Math.min(300, Math.round((+v || 0) * 10) / 10)); };
+      page.dataset.hd = String(ok(hd));
+      page.dataset.fd = String(ok(fd));
+      page.dataset.hfo = '1';
+      hfPlace();
+      snapshot();
+      scheduleSave();
+      queuePaginate(0);
+      queueReport();
+    },
+    /**
+     * Diseño listo para el encabezado/pie abierto: 'blank', 'three' (izquierda, centro y
+     * derecha), 'title' (el título del documento) o 'logo' (una imagen y el título).
+     */
+    preset: function (name, title, logo) {
+      if (!hfLive || readOnly) return;
+      if (typingTimer) snapshot();
+      const t = htmlText(title || 'Título del documento');
+      const cell = function (al, text) {
+        return '<td style="border:none;width:33.3%"><p style="text-align:' + al + '">' + text + '</p></td>';
+      };
+      let html = '<p><br></p>';
+      if (name === 'three') {
+        html = '<table data-bd="0" style="width:100%"><tbody><tr>' +
+          cell('left', 'Escribe aquí') + cell('center', 'Escribe aquí') + cell('right', 'Escribe aquí') +
+          '</tr></tbody></table><p><br></p>';
+      } else if (name === 'title') {
+        html = '<p style="text-align:center"><span style="font-weight:bold">' + t + '</span></p>';
+      } else if (name === 'logo' && logo) {
+        html = '<p><img src="' + String(logo).replace(/[&"<>]/g, '') + '" style="height:36pt"> ' +
+          '<span style="font-weight:bold">' + t + '</span></p>';
+      }
+      hfLive.innerHTML = html;
+      // El logo, con su proporción y 36 pt de alto
+      const img = hfLive.querySelector('img');
+      if (img) {
+        const size = function () {
+          if (!img.naturalWidth) return;
+          img.style.width = Math.round(36 * img.naturalWidth / img.naturalHeight) + 'pt';
+          hfSync();
+          hfPlace();
+          scheduleSave();
+          queuePaginate(0);
+        };
+        if (img.complete) size(); else img.onload = size;
+      }
+      caretAtEnd(hfLive);
+      afterCommand();
+    },
+    /** Número de página arriba ('h'), abajo ('f') o donde está el cursor ('c'); '' lo quita. */
+    number: function (where, align, fmt) {
+      if (readOnly) return;
+      if (where === 'c') {
+        // Con un rango propio: insertHTML de Chrome a veces deja el campo fuera del párrafo
+        if (typingTimer) snapshot();
+        restoreRange();
+        const sel = window.getSelection();
+        if (!sel.rangeCount || !ed.contains(sel.getRangeAt(0).startContainer)) return;
+        const r = sel.getRangeAt(0);
+        r.deleteContents();
+        const frag = r.createContextualFragment(fmt === 'nofm' ? 'Página ' + PAGE_FIELD + ' de ' + TOTAL_FIELD : PAGE_FIELD);
+        const last = frag.lastChild;
+        r.insertNode(frag);
+        r.setStartAfter(last);
+        r.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(r);
+        savedRange = r.cloneRange();
+        afterCommand();
+        return;
+      }
+      if (typingTimer) snapshot();
+      hfSync();
+      HF_IDS.forEach(function (id) {
+        const d = hfDiv(id);
+        if (!d) return;
+        const blocks = numberBlocks(d);
+        if (!blocks.length) return;
+        blocks.forEach(function (b) { b.remove(); });
+        d.dataset.hfd = '1';
+      });
+      if (where === 'h' || where === 'f') {
+        // En todas las páginas: también en las pares si son distintas (la primera queda como está)
+        const al = ALIGNS.indexOf(align) >= 0 ? align : 'center';
+        [where + 'd'].concat(hfOptions().eo ? [where + 'e'] : []).forEach(function (id) {
+          const d = ensureHf(id);
+          if (!hfHasContent(d)) d.innerHTML = '';
+          d.insertAdjacentHTML('beforeend', '<p style="text-align:' + al + '">' +
+            (fmt === 'nofm' ? 'Página ' + PAGE_FIELD + ' de ' + TOTAL_FIELD : PAGE_FIELD) + '</p>');
+          d.dataset.hfd = '1';
+        });
+      }
+      hfReload();
+      snapshot();
+      scheduleSave();
+      queuePaginate(0);
+      queueReport();
+    }
+  };
+
+  /** Encabezados y pies cambiados, para guardarlos en Word: bloques como los del cuerpo. */
+  function headersModel() {
+    if (hfLive) hfSync();
+    const out = {};
+    let any = false;
+    HF_IDS.forEach(function (id) {
+      const d = hfDiv(id);
+      if (!d || !d.dataset.hfd) return;
+      const blocks = [];
+      blocksOf(d, countRefs(d), blocks);
+      out[id] = { blocks: blocks };
+      any = true;
+    });
+    return any ? out : null;
+  }
+
+  // Doble toque en el margen de arriba o de abajo de una hoja: editar su encabezado o pie.
+  // Con uno abierto, doble toque en el texto: volver al cuerpo.
+  page.addEventListener('dblclick', function (e) {
+    if (!paged() || readOnly || !lastStep) return;
+    const ps = pageSetup();
+    const pr = page.getBoundingClientRect();
+    const scale = page.offsetWidth ? pr.width / page.offsetWidth : 1;
+    const yy = (e.clientY - pr.top) / scale;
+    const i = Math.floor(yy / lastStep);
+    const within = yy - i * lastStep;
+    if (within < ps.mt * PX) { e.preventDefault(); hfEnter('h', i); }
+    else if (within > (ps.h - ps.mb) * PX && within <= ps.h * PX) { e.preventDefault(); hfEnter('f', i); }
+    else if (hfLive) { e.preventDefault(); hfExit(false); }
   });
+
+  // ---------- Eventos ----------
+
+  page.addEventListener('beforeinput', onEditBeforeInput);
+  page.addEventListener('input', onEditInput);
+  page.addEventListener('click', onEditClick);
 
   document.addEventListener('selectionchange', function () {
     const sel = window.getSelection();
-    if (sel.rangeCount && page.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+    if (sel.rangeCount && ed.contains(sel.getRangeAt(0).commonAncestorContainer)) {
       savedRange = sel.getRangeAt(0).cloneRange();
     }
     queueReport();
@@ -2064,11 +2564,13 @@
     redo: redo,
     setReadOnly: function (ro) {
       readOnly = ro;
+      if (ro) hfExit(false);
       page.setAttribute('inputmode', ro ? 'none' : 'text');
       document.body.classList.toggle('readonly', ro);
       if (!ro) page.focus({ preventScroll: true });
     },
     setMode: function (mode) {
+      if (mode !== 'page') hfExit(false);
       document.body.classList.toggle('paged', mode === 'page');
       document.body.classList.toggle('mobile', mode !== 'page');
       fit();
