@@ -115,6 +115,45 @@ pub struct MTable {
     pub src: Option<String>,
     #[serde(default)]
     pub cells: Vec<MCell>,
+    /// Tabla entera fila por fila (nueva o cambiada con las herramientas de tabla).
+    pub rows: Option<Vec<MRow>>,
+    /// Anchos de las columnas de la cuadrícula, en puntos.
+    #[serde(default)]
+    pub grid: Vec<f32>,
+    /// Bordes puestos o quitados desde la barra.
+    pub bd: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct MRow {
+    /// Fila del original de la que sale el formato.
+    pub tr: Option<usize>,
+    #[serde(default)]
+    pub gb: u32,
+    #[serde(default)]
+    pub cells: Vec<MGridCell>,
+}
+
+#[derive(Deserialize)]
+pub struct MGridCell {
+    /// Celda del original ("fila:celda") de la que sale el formato.
+    pub c: Option<String>,
+    #[serde(default = "one")]
+    pub s: u32,
+    /// 0 sola, 1 empieza una combinación vertical, 2 la continúa.
+    #[serde(default)]
+    pub m: u8,
+    #[serde(default)]
+    pub blocks: Vec<MBlock>,
+    /// bg y va cambiaron (o la celda es nueva).
+    #[serde(default)]
+    pub set: bool,
+    pub bg: Option<String>,
+    pub va: Option<String>,
+}
+
+fn one() -> u32 {
+    1
 }
 
 #[derive(Deserialize)]
@@ -174,7 +213,10 @@ fn count_sources(blocks: &[MBlock], out: &mut HashMap<String, usize>) {
                     *out.entry(s.clone()).or_insert(0) += 1;
                 }
             }
-            MBlock::Table(t) => t.cells.iter().for_each(|c| count_sources(&c.blocks, out)),
+            MBlock::Table(t) => {
+                t.cells.iter().for_each(|c| count_sources(&c.blocks, out));
+                t.rows.iter().flatten().flat_map(|r| &r.cells).for_each(|c| count_sources(&c.blocks, out));
+            }
             MBlock::Keep(_) => {}
         }
     }
@@ -190,6 +232,11 @@ fn build_blocks(ctx: &mut Ctx, doc: &mut Document, blocks: &[MBlock]) -> Blocks 
                 }
             }
             MBlock::Para(mp) => out.push(Arc::new(Block::Para(build_para(ctx, doc, mp)))),
+            MBlock::Table(mt) if mt.rows.is_some() => {
+                if let Some(t) = grid_table(ctx, doc, mt) {
+                    out.push(Arc::new(Block::Table(t)));
+                }
+            }
             MBlock::Table(mt) => {
                 let src = mt.src.as_deref().and_then(|s| find_block(&ctx.orig.body, s));
                 match src.as_deref() {
@@ -219,6 +266,122 @@ fn build_blocks(ctx: &mut Ctx, doc: &mut Document, blocks: &[MBlock]) -> Blocks 
         }
     }
     out
+}
+
+fn grid_style(doc: &mut Document) {
+    if doc.styles.get("TableGrid").is_none() {
+        if let Some(st) = StyleSheet::builtin().get("TableGrid").cloned() {
+            doc.styles.upsert(st);
+        }
+    }
+}
+
+/// Tabla armada desde lo que se ve: filas, celdas combinadas y anchos del editor; el formato de
+/// la tabla, de cada fila y de cada celda se copia de su origen en el original.
+fn grid_table(ctx: &mut Ctx, doc: &mut Document, mt: &MTable) -> Option<Table> {
+    use wordcraft_doc::props::{BorderStyle, VAlign, VMerge};
+    use wordcraft_doc::table::{MAX_COLS, MAX_ROWS};
+    use wordcraft_doc::{Cell, Row};
+
+    let rows = mt.rows.as_deref().filter(|r| !r.is_empty())?;
+    let orig = match mt.src.as_deref().and_then(|s| find_block(&ctx.orig.body, s)).as_deref() {
+        Some(Block::Table(t)) => Some(t.clone()),
+        _ => None,
+    };
+    let used = |r: &MRow| r.gb as usize + r.cells.iter().map(|c| c.s.clamp(1, MAX_COLS as u32) as usize).sum::<usize>();
+    let ncols = rows.iter().map(used).max()?.clamp(1, MAX_COLS);
+    let s = &doc.last_section;
+    let width = (s.page_w - s.margin_left - s.margin_right).max(72.0);
+
+    let mut t = match &orig {
+        Some(o) => Table { props: o.props.clone(), grid: Vec::new(), rows: Vec::new(), controls: o.controls.clone() },
+        None => {
+            grid_style(doc);
+            let mut t = Table::new(1, 1, width);
+            t.props.borders = Some(Borders::all(Border::single(0.5)));
+            t.rows.clear();
+            t
+        }
+    };
+    let ok = |w: &f32| w.is_finite() && *w > 0.0;
+    t.grid = if mt.grid.len() == ncols && mt.grid.iter().all(ok) {
+        mt.grid.iter().map(|w| w.clamp(6.0, 1584.0)).collect()
+    } else {
+        vec![(width / ncols as f32).max(6.0); ncols]
+    };
+    let span_w = |grid: &[f32], a: usize, n: usize| grid.iter().skip(a).take(n).sum::<f32>();
+
+    let mut seen = HashSet::new();
+    for mr in rows.iter().take(MAX_ROWS) {
+        let mut row = Row::default();
+        if let Some(or) = mr.tr.and_then(|i| orig.as_ref()?.rows.get(i)) {
+            row.props = or.props.clone();
+            // Una fila copiada de otra no repite como encabezado
+            if !seen.insert(mr.tr) {
+                row.props.header = false;
+            }
+        }
+        let gb = (mr.gb as usize).min(ncols - 1);
+        let after = ncols.saturating_sub(used(mr).min(ncols));
+        row.props.grid_before = gb as u32;
+        row.props.w_before = (gb > 0).then(|| span_w(&t.grid, 0, gb));
+        row.props.grid_after = after as u32;
+        row.props.w_after = (after > 0).then(|| span_w(&t.grid, ncols - after, after));
+
+        let mut g = gb;
+        for mc in &mr.cells {
+            if g >= ncols {
+                break;
+            }
+            let span = (mc.s.max(1) as usize).min(ncols - g);
+            let mut cell = Cell::empty();
+            if let Some(oc) = mc.c.as_deref().and_then(|c| orig_cell(orig.as_ref()?, c)) {
+                cell.props = oc.props.clone();
+            }
+            cell.props.span = span as u32;
+            cell.props.width = Some(span_w(&t.grid, g, span));
+            cell.props.width_pct = None;
+            cell.props.vmerge = match mc.m {
+                1 => VMerge::Restart,
+                2 => VMerge::Continue,
+                _ => VMerge::None,
+            };
+            if mc.set {
+                cell.props.shading = mc.bg.as_deref().and_then(Rgb::parse);
+                cell.props.valign = Some(match mc.va.as_deref() {
+                    Some("middle") => VAlign::Center,
+                    Some("bottom") => VAlign::Bottom,
+                    _ => VAlign::Top,
+                });
+            }
+            if mc.m != 2 {
+                let blocks = build_blocks(ctx, doc, &mc.blocks);
+                if !blocks.is_empty() {
+                    cell.blocks = blocks;
+                }
+            }
+            row.cells.push(cell);
+            g += span;
+        }
+        if !row.cells.is_empty() {
+            t.rows.push(row);
+        }
+    }
+    if t.rows.is_empty() {
+        return None;
+    }
+    if let Some(on) = mt.bd {
+        let line = if on { Border::single(0.5) } else { Border { style: BorderStyle::None, width: 0.0, color: None, space: 0.0 } };
+        t.props.borders = Some(Borders::all(line));
+        // Los bordes de cada celda ganarían a los de la tabla
+        t.rows.iter_mut().flat_map(|r| r.cells.iter_mut()).for_each(|c| c.props.borders = None);
+    }
+    Some(t)
+}
+
+fn orig_cell<'a>(t: &'a Table, rc: &str) -> Option<&'a wordcraft_doc::Cell> {
+    let (r, c) = rc.split_once(':')?;
+    t.rows.get(r.parse::<usize>().ok()?)?.cells.get(c.parse::<usize>().ok()?)
 }
 
 /// Tabla con bordes simples (estilo "Tabla con cuadrícula") del ancho del texto de la hoja.

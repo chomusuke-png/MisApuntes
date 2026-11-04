@@ -173,3 +173,39 @@ fn page_size_and_margins_from_editor() {
     let html = wordbridge::to_html(out.to_str().unwrap(), "docx", dir.to_str().unwrap()).unwrap();
     assert!(html.contains("data-ph=\"595"));
 }
+
+#[test]
+fn grid_table_with_merges_shading_and_alignment() {
+    use wordcraft_doc::Block;
+    use wordcraft_doc::props::{VAlign, VMerge};
+    let dir = tmp("grid");
+    // 3 columnas: fila 0 con A1 combinada a lo ancho (2) y C1 combinada hacia abajo (2 filas);
+    // fila 1: A2 sombreada y centrada, B2, y la continuación de C1. Sin bordes.
+    let model = r##"{"blocks":[{"t":{"src":null,"grid":[100,100,200],"bd":false,"rows":[
+        {"tr":null,"cells":[
+            {"s":2,"m":0,"set":true,"bg":"","va":"","blocks":[{"p":{"tag":"p","segs":[{"t":"A1"}]}}]},
+            {"s":1,"m":1,"set":true,"bg":"","va":"bottom","blocks":[{"p":{"tag":"p","segs":[{"t":"C1"}]}}]}]},
+        {"tr":null,"cells":[
+            {"s":1,"m":0,"set":true,"bg":"#FFFF00","va":"middle","blocks":[{"p":{"tag":"p","segs":[{"t":"A2"}]}}]},
+            {"s":1,"m":0,"set":true,"bg":"","va":"","blocks":[]},
+            {"s":1,"m":2,"set":true,"bg":"","va":"bottom","blocks":[]}]}
+    ]}}]}"##;
+    let out = dir.join("out.docx");
+    wordbridge::to_docx("", "docx", model, dir.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+    let doc = wordbridge::open(out.to_str().unwrap(), "docx").unwrap();
+    let t = doc.body.iter().find_map(|b| if let Block::Table(t) = &**b { Some(t.clone()) } else { None }).expect("tabla");
+    assert_eq!(t.grid.len(), 3);
+    assert_eq!(t.rows.len(), 2);
+    assert_eq!(t.rows[0].cells.len(), 2);
+    assert_eq!(t.rows[0].cells[0].props.span, 2);
+    assert_eq!(t.rows[0].cells[1].props.vmerge, VMerge::Restart);
+    assert_eq!(t.rows[1].cells[2].props.vmerge, VMerge::Continue);
+    assert_eq!(t.rows[0].cells[1].props.valign, Some(VAlign::Bottom));
+    assert_eq!(t.rows[1].cells[0].props.valign, Some(VAlign::Center));
+    assert!(t.rows[1].cells[0].props.shading.is_some());
+    assert!(t.rows[1].cells[1].props.shading.is_none());
+    let text: Vec<String> = t.rows[0].cells[0].blocks.iter().filter_map(|b| b.as_para().map(|p| p.plain_text())).collect();
+    assert_eq!(text, ["A1"]);
+    let b = t.props.borders.as_ref().unwrap();
+    assert!(b.top.as_ref().is_none_or(|s| s.width == 0.0 || s.style == wordcraft_doc::props::BorderStyle::None));
+}

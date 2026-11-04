@@ -402,8 +402,13 @@
         out.push({ p: n.classList.contains('wrule') ? { tag: 'p', rule: true, segs: [] } : { tag: 'p', segs: [{ pb: 1 }] } });
         continue;
       }
+      if (tag === 'TABLE' && (n.dataset.tx || !b)) {
+        // Tabla nueva o cambiada con las herramientas: va entera, fila por fila
+        out.push({ t: gridModel(n, b, counts) });
+        continue;
+      }
       if (tag === 'TABLE') {
-        // Las celdas de Word traen su posición (data-c); las de tablas nuevas, la de la cuadrícula
+        // Solo cambió el texto: cada celda va a su posición en Word (data-c)
         const cells = [];
         let r = -1;
         Array.prototype.forEach.call(n.rows, function (tr) {
@@ -434,6 +439,38 @@
       if (p.segs.length || !nested.length) out.push({ p: p });
       nested.forEach(function (list, i) { listModel(list, 0, out, i === 0 && !p.segs.length ? p.src : null); });
     }
+  }
+
+  /**
+   * Tabla como la guarda Word: cada fila con todas sus celdas, también las que continúan una
+   * combinación vertical (m: 0 sola, 1 empieza, 2 continúa). c y tr dicen de qué celda y fila
+   * del original sale el formato; bg/va van solo si se cambiaron (o si la celda es nueva).
+   */
+  function gridModel(n, src, counts) {
+    const m = readTable(n);
+    const rows = m.rows.map(function (tr, r) {
+      const gb = parseInt(tr.dataset.gb || '0', 10) || 0;
+      let last = -1;
+      m.occ[r].forEach(function (c, g) { if (c) last = g; });
+      const cells = [];
+      let g = gb;
+      while (g <= last) {
+        const c = m.occ[r][g];
+        if (!c) { cells.push({ s: 1, m: 0, blocks: [] }); g++; continue; }
+        const top = c.r === r;
+        const cell = { c: c.td.dataset.c || null, s: c.cs, m: c.rs > 1 ? (top ? 1 : 2) : 0, blocks: [] };
+        if (top) blocksOf(c.td, counts, cell.blocks);
+        if (!c.td.dataset.c || c.td.dataset.cs) {
+          cell.set = true;
+          cell.bg = hexColor(c.td.style.backgroundColor) || '';
+          cell.va = c.td.style.verticalAlign || '';
+        }
+        cells.push(cell);
+        g = c.g + c.cs;
+      }
+      return { tr: tr.dataset.tr ? parseInt(tr.dataset.tr, 10) : null, gb: gb, cells: cells };
+    });
+    return { src: src || null, rows: rows, grid: m.cols, bd: n.dataset.bd ? n.dataset.bd === '1' : null };
   }
 
   function model() {
@@ -702,6 +739,425 @@
     }
   };
 
+  // ---------- Tabla con el cursor ----------
+  // La tabla se lee como cuadrícula: cada celda es un rectángulo (fila r, columna g, alto rs,
+  // ancho cs). Las herramientas cambian esos rectángulos y la tabla se vuelve a armar con las
+  // mismas celdas, así el texto no se toca. Al guardar, la tabla marcada con data-tx se rehace
+  // en Word desde lo que se ve; el formato de filas y celdas sale de su origen (data-tr, data-c).
+
+  /** Filas propias de la tabla (sin las de tablas anidadas ni los separadores de página). */
+  function ownRows(t) {
+    return Array.prototype.filter.call(t.rows, function (tr) { return tr.closest('table') === t && !tr.classList.contains('wgap'); });
+  }
+
+  function readTable(t) {
+    const rows = ownRows(t);
+    const cells = [], occ = rows.map(function () { return []; });
+    rows.forEach(function (tr, r) {
+      let g = parseInt(tr.dataset.gb || '0', 10) || 0;
+      Array.prototype.forEach.call(tr.cells, function (td) {
+        while (occ[r][g]) g++;
+        const c = { td: td, r: r, g: g, rs: Math.max(1, Math.min(td.rowSpan || 1, rows.length - r)), cs: Math.max(1, td.colSpan || 1) };
+        for (let i = 0; i < c.rs; i++) for (let j = 0; j < c.cs; j++) occ[r + i][g + j] = c;
+        cells.push(c);
+        g += c.cs;
+      });
+    });
+    let ncols = 0;
+    occ.forEach(function (row) { ncols = Math.max(ncols, row.length); });
+    return { t: t, rows: rows, cells: cells, occ: occ, ncols: ncols, cols: columnWidths(t, ncols) };
+  }
+
+  /** Anchos de las columnas de la cuadrícula en puntos (los de Word, o repartidos por igual). */
+  function columnWidths(t, n) {
+    const cg = Array.prototype.find.call(t.children, function (c) { return c.tagName === 'COLGROUP'; });
+    const own = cg ? Array.prototype.map.call(cg.children, function (c) { return sizePt(c.style.width || '') || 0; }) : [];
+    if (own.length === n && own.every(function (w) { return w > 0; })) return own;
+    const total = sizePt(t.style.width || '') || (own.length ? own.reduce(function (a, b) { return a + b; }, 0) : 0) || contentWidthPt();
+    return Array.from({ length: n }, function () { return total / Math.max(1, n); });
+  }
+
+  function slotAt(m, r, g) { return m.occ[r] ? m.occ[r][g] : undefined; }
+
+  /** Vuelve a armar la tabla con los rectángulos de m (mismas celdas, nuevo orden y tamaño). */
+  function writeTable(m) {
+    const t = m.t;
+    let body = t.tBodies[0];
+    if (!body) { body = document.createElement('tbody'); t.appendChild(body); }
+    ownRows(t).forEach(function (tr) { if (m.rows.indexOf(tr) < 0) tr.remove(); });
+    m.rows.forEach(function (tr) {
+      while (tr.cells.length) tr.removeChild(tr.cells[0]);
+      body.appendChild(tr);
+    });
+    m.cells.sort(function (a, b) { return a.r - b.r || a.g - b.g; }).forEach(function (c) {
+      if (c.rs > 1) c.td.rowSpan = c.rs; else c.td.removeAttribute('rowspan');
+      if (c.cs > 1) c.td.colSpan = c.cs; else c.td.removeAttribute('colspan');
+      m.rows[c.r].appendChild(c.td);
+    });
+    // Columnas: mismo ancho total de la tabla
+    let cg = Array.prototype.find.call(t.children, function (c) { return c.tagName === 'COLGROUP'; });
+    if (!cg) { cg = document.createElement('colgroup'); t.insertBefore(cg, t.firstChild); }
+    cg.innerHTML = m.cols.map(function (w) { return '<col style="width:' + Math.round(w * 10) / 10 + 'pt">'; }).join('');
+    t.dataset.tx = '1';
+  }
+
+  function emptyCell(like) {
+    const td = document.createElement('td');
+    td.innerHTML = '<p><br></p>';
+    if (like) {
+      if (like.dataset.c) td.dataset.c = like.dataset.c;
+      ['border', 'borderTop', 'borderRight', 'borderBottom', 'borderLeft', 'backgroundColor', 'verticalAlign'].forEach(function (p) {
+        if (like.style[p]) td.style[p] = like.style[p];
+      });
+    }
+    return td;
+  }
+
+  function newRow(like) {
+    const tr = document.createElement('tr');
+    if (like && like.dataset.tr) tr.dataset.tr = like.dataset.tr;
+    if (like && like.dataset.gb) tr.dataset.gb = like.dataset.gb;
+    return tr;
+  }
+
+  function isEmptyCell(td) {
+    return !td.textContent.replace(/[\s​]/g, '') && !td.querySelector('img,table,hr');
+  }
+
+  /** Celda del cursor y rectángulo de celdas que toca la selección. */
+  function tableTarget() {
+    const r = savedRange;
+    if (!r || !page.contains(r.startContainer)) return null;
+    const el = r.startContainer.nodeType === 1 ? r.startContainer : r.startContainer.parentNode;
+    const td = el && el.closest('td,th');
+    if (!td || !page.contains(td)) return null;
+    const t = td.closest('table');
+    const m = readTable(t);
+    const first = m.cells.find(function (c) { return c.td === td; });
+    if (!first) return null;
+    const endEl = r.endContainer.nodeType === 1 ? r.endContainer : r.endContainer.parentNode;
+    const endTd = endEl && endEl.closest('td,th');
+    const last = endTd && endTd.closest('table') === t ? m.cells.find(function (c) { return c.td === endTd; }) || first : first;
+    // Rectángulo que cubre ambas celdas, agrandado hasta no cortar ninguna celda combinada
+    let r0 = Math.min(first.r, last.r), r1 = Math.max(first.r + first.rs, last.r + last.rs) - 1;
+    let g0 = Math.min(first.g, last.g), g1 = Math.max(first.g + first.cs, last.g + last.cs) - 1;
+    for (let changed = true; changed;) {
+      changed = false;
+      m.cells.forEach(function (c) {
+        if (c.r > r1 || c.r + c.rs - 1 < r0 || c.g > g1 || c.g + c.cs - 1 < g0) return;
+        if (c.r < r0) { r0 = c.r; changed = true; }
+        if (c.r + c.rs - 1 > r1) { r1 = c.r + c.rs - 1; changed = true; }
+        if (c.g < g0) { g0 = c.g; changed = true; }
+        if (c.g + c.cs - 1 > g1) { g1 = c.g + c.cs - 1; changed = true; }
+      });
+    }
+    const sel = m.cells.filter(function (c) { return c.r >= r0 && c.r + c.rs - 1 <= r1 && c.g >= g0 && c.g + c.cs - 1 <= g1; });
+    return { m: m, cell: first, rect: { r0: r0, r1: r1, g0: g0, g1: g1 }, sel: sel };
+  }
+
+  function caretIn(td) {
+    const r = document.createRange();
+    const leaf = td.querySelector(LEAF_BLOCKS) || td;
+    r.selectNodeContents(leaf);
+    r.collapse(true);
+    const s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+    savedRange = r.cloneRange();
+  }
+
+  function tableCommand(fn) {
+    if (readOnly) return;
+    if (typingTimer) snapshot();
+    const target = tableTarget();
+    if (!target) return;
+    // Sin separadores de página mientras se reacomoda (se vuelven a poner al final)
+    if (observer) markChanges(observer.takeRecords());
+    clearGaps();
+    if (observer) observer.takeRecords();
+    const focus = fn(target);
+    if (focus && page.contains(focus)) caretIn(focus);
+    afterCommand();
+  }
+
+  /** Ancho total igual: la columna nueva sale de las demás. */
+  function keepTotal(m, total) {
+    const now = m.cols.reduce(function (a, b) { return a + b; }, 0);
+    if (now > 0 && total > 0) m.cols = m.cols.map(function (w) { return w * total / now; });
+  }
+
+  function insertRow(m, at, like) {
+    const tr = newRow(m.rows[like]);
+    let g = 0;
+    while (g < m.ncols) {
+      const c = slotAt(m, like, g);
+      if (!c) { g++; continue; }
+      // Una celda combinada que sigue por encima y por debajo crece; si no, celda nueva
+      if (c.r < at && c.r + c.rs > at) c.rs++;
+      else m.cells.push({ td: emptyCell(c.td), r: at, g: g, rs: 1, cs: c.cs, fresh: true });
+      g = c.g + c.cs;
+    }
+    m.cells.forEach(function (c) { if (!c.fresh && c.r >= at) c.r++; delete c.fresh; });
+    m.rows.splice(at, 0, tr);
+    writeTable(m);
+    const first = m.cells.find(function (c) { return c.r === at; });
+    return first && first.td;
+  }
+
+  function deleteRow(m, row) {
+    m.cells = m.cells.filter(function (c) {
+      if (c.r === row && c.rs === 1) return false;
+      if (c.r <= row && c.r + c.rs > row) c.rs--;
+      else if (c.r > row) c.r--;
+      return true;
+    });
+    m.rows.splice(row, 1);
+  }
+
+  function insertCol(m, at) {
+    const total = m.cols.reduce(function (a, b) { return a + b; }, 0);
+    const w = m.cols[Math.min(at, m.cols.length - 1)] || 72;
+    m.cells.forEach(function (c) {
+      if (c.g >= at) c.g++;
+      else if (c.g + c.cs > at) c.cs++;
+    });
+    m.cols.splice(at, 0, w);
+    m.rows.forEach(function (tr, r) {
+      const covered = m.cells.some(function (c) { return c.r <= r && c.r + c.rs > r && c.g <= at && c.g + c.cs > at; });
+      if (covered) return;
+      const near = m.cells.find(function (c) { return c.r <= r && c.r + c.rs > r && (c.g + c.cs === at || c.g === at + 1); });
+      m.cells.push({ td: emptyCell(near && near.td), r: r, g: at, rs: 1, cs: 1 });
+    });
+    keepTotal(m, total);
+  }
+
+  function deleteCol(m, col) {
+    const total = m.cols.reduce(function (a, b) { return a + b; }, 0);
+    m.cells = m.cells.filter(function (c) {
+      if (c.g <= col && c.g + c.cs > col) {
+        if (c.cs === 1) return false;
+        c.cs--;
+      } else if (c.g > col) c.g--;
+      return true;
+    });
+    m.cols.splice(col, 1);
+    keepTotal(m, total);
+  }
+
+  /** Corta la cuadrícula para que una celda (g, cs) se pueda partir en n anchos iguales. */
+  function gridLines(m, g, cs, n) {
+    const EPS = 0.5;
+    let end = g + cs;
+    const total = m.cols.slice(g, end).reduce(function (a, b) { return a + b; }, 0);
+    const lines = [];
+    for (let k = 1; k < n; k++) {
+      const x = total * k / n;
+      let acc = 0;
+      for (let j = g; j < end; j++) {
+        const w = m.cols[j];
+        if (j > g && Math.abs(x - acc) <= EPS) { lines.push(j); break; }
+        if (x < acc + w - EPS) {
+          if (x > acc + EPS) {
+            // Columna nueva dentro de j: las celdas que la cruzan se ensanchan
+            m.cols.splice(j, 1, x - acc, w - (x - acc));
+            m.cells.forEach(function (c) {
+              if (c.g <= j && c.g + c.cs > j) c.cs++;
+              else if (c.g > j) c.g++;
+            });
+            end++;
+            lines.push(j + 1);
+          }
+          break;
+        }
+        acc += w;
+      }
+    }
+    return lines;
+  }
+
+  window.tableTools = {
+    insertRow: function (below) {
+      tableCommand(function (x) {
+        const at = below ? x.rect.r1 + 1 : x.rect.r0;
+        return insertRow(x.m, at, below ? x.rect.r1 : x.rect.r0);
+      });
+    },
+    insertCol: function (right) {
+      tableCommand(function (x) {
+        const at = right ? x.rect.g1 + 1 : x.rect.g0;
+        insertCol(x.m, at);
+        writeTable(x.m);
+        const c = slotAt(readTable(x.m.t), x.cell.r, at);
+        return c ? c.td : x.cell.td;
+      });
+    },
+    deleteRow: function () {
+      tableCommand(function (x) {
+        const m = x.m;
+        for (let r = x.rect.r1; r >= x.rect.r0; r--) deleteRow(m, r);
+        if (!m.rows.length) return removeTable(m.t);
+        writeTable(m);
+        const row = Math.min(x.rect.r0, m.rows.length - 1);
+        const c = m.cells.find(function (c) { return c.r <= row && c.r + c.rs > row; });
+        return c && c.td;
+      });
+    },
+    deleteCol: function () {
+      tableCommand(function (x) {
+        const m = x.m;
+        for (let g = x.rect.g1; g >= x.rect.g0; g--) deleteCol(m, g);
+        if (!m.cols.length || !m.cells.length) return removeTable(m.t);
+        writeTable(m);
+        const c = m.cells.find(function (c) { return c.r <= x.cell.r && c.r + c.rs > x.cell.r && c.g <= Math.min(x.rect.g0, m.cols.length - 1) && c.g + c.cs > Math.min(x.rect.g0, m.cols.length - 1); });
+        return c && c.td;
+      });
+    },
+    deleteTable: function () {
+      tableCommand(function (x) { return removeTable(x.m.t); });
+    },
+    merge: function () {
+      tableCommand(function (x) {
+        if (x.sel.length < 2) return x.cell.td;
+        const m = x.m, rc = x.rect;
+        const keep = x.sel.find(function (c) { return c.r === rc.r0 && c.g === rc.g0; }) || x.sel[0];
+        // El texto de las demás celdas pasa a la primera, en orden de lectura
+        if (isEmptyCell(keep.td)) keep.td.innerHTML = '';
+        x.sel.sort(function (a, b) { return a.r - b.r || a.g - b.g; }).forEach(function (c) {
+          if (c === keep) return;
+          if (!isEmptyCell(c.td)) while (c.td.firstChild) keep.td.appendChild(c.td.firstChild);
+        });
+        if (!keep.td.firstChild) keep.td.innerHTML = '<p><br></p>';
+        m.cells = m.cells.filter(function (c) { return c === keep || x.sel.indexOf(c) < 0; });
+        keep.r = rc.r0; keep.g = rc.g0;
+        keep.rs = rc.r1 - rc.r0 + 1; keep.cs = rc.g1 - rc.g0 + 1;
+        writeTable(m);
+        return keep.td;
+      });
+    },
+    /** Divide la celda del cursor en cols × rows celdas. false si el alto no se puede repartir. */
+    split: function (cols, rows) {
+      cols = Math.max(1, Math.min(20, cols | 0));
+      rows = Math.max(1, Math.min(50, rows | 0));
+      let ok = true;
+      tableCommand(function (x) {
+        const m = x.m, cell = x.cell;
+        if (cell.rs > 1 && cell.rs % rows !== 0) { ok = false; return cell.td; }
+        let parts = [cell];
+        if (rows > 1) {
+          if (cell.rs === 1) {
+            // Filas nuevas debajo: el resto de la fila se estira sobre ellas
+            const after = cell.r + 1;
+            m.cells.forEach(function (c) {
+              if (c.r > cell.r) c.r += rows - 1;
+              else if (c !== cell && c.r + c.rs > cell.r) c.rs += rows - 1;
+            });
+            for (let k = 1; k < rows; k++) {
+              m.rows.splice(after, 0, newRow(m.rows[cell.r]));
+              const p = { td: emptyCell(cell.td), r: cell.r + k, g: cell.g, rs: 1, cs: cell.cs };
+              m.cells.push(p);
+              parts.push(p);
+            }
+          } else {
+            const h = cell.rs / rows;
+            cell.rs = h;
+            for (let k = 1; k < rows; k++) {
+              const p = { td: emptyCell(cell.td), r: cell.r + k * h, g: cell.g, rs: h, cs: cell.cs };
+              m.cells.push(p);
+              parts.push(p);
+            }
+          }
+        }
+        if (cols > 1) {
+          const lines = gridLines(m, cell.g, cell.cs, cols);
+          parts.forEach(function (p) {
+            let a = p.g;
+            const end = p.g + p.cs;
+            lines.concat([end]).forEach(function (b, k) {
+              if (b <= a) return;
+              if (k === 0 || a === p.g) { p.cs = b - a; }
+              else m.cells.push({ td: emptyCell(p.td), r: p.r, g: a, rs: p.rs, cs: b - a });
+              a = b;
+            });
+          });
+        }
+        m.ncols = m.cols.length;
+        writeTable(m);
+        return cell.td;
+      });
+      return ok;
+    },
+    /** Color de fondo de las celdas tocadas ("" = sin color). */
+    shade: function (color) {
+      tableCommand(function (x) {
+        x.sel.forEach(function (c) {
+          c.td.style.backgroundColor = color || '';
+          c.td.dataset.cs = '1';
+        });
+        x.m.t.dataset.tx = '1';
+        return null;
+      });
+    },
+    /** Texto arriba, al centro o abajo de la celda. */
+    valign: function (where) {
+      tableCommand(function (x) {
+        x.sel.forEach(function (c) {
+          c.td.style.verticalAlign = where === 'top' ? '' : where;
+          c.td.dataset.cs = '1';
+        });
+        x.m.t.dataset.tx = '1';
+        return null;
+      });
+    },
+    borders: function (on) {
+      tableCommand(function (x) {
+        x.m.cells.forEach(function (c) {
+          ['borderTop', 'borderRight', 'borderBottom', 'borderLeft'].forEach(function (p) { c.td.style[p] = ''; });
+          c.td.style.border = on ? '0.5pt solid #000' : 'none';
+        });
+        x.m.t.dataset.bd = on ? '1' : '0';
+        x.m.t.dataset.tx = '1';
+        return null;
+      });
+    },
+    /** Todas las columnas del mismo ancho. */
+    distribute: function () {
+      tableCommand(function (x) {
+        const m = x.m, total = m.cols.reduce(function (a, b) { return a + b; }, 0);
+        m.cols = m.cols.map(function () { return total / m.cols.length; });
+        writeTable(m);
+        return null;
+      });
+    }
+  };
+
+  function removeTable(t) {
+    const next = t.nextElementSibling;
+    const p = document.createElement('p');
+    p.innerHTML = '<br>';
+    // El cursor necesita dónde quedar
+    if (!next || next.tagName === 'TABLE') t.parentNode.insertBefore(p, t);
+    const focus = next && next.tagName !== 'TABLE' ? next : p;
+    t.remove();
+    return focus;
+  }
+
+  /** Estado de la tabla del cursor para la barra (null fuera de una tabla). */
+  function tableState() {
+    if (selectedImg) return null;
+    const x = tableTarget();
+    if (!x) return null;
+    const td = x.cell.td, cs = getComputedStyle(td);
+    return {
+      rows: x.m.rows.length,
+      cols: x.m.ncols,
+      cells: x.sel.length,
+      merged: x.cell.rs > 1 || x.cell.cs > 1,
+      bg: hexColor(td.style.backgroundColor) || '',
+      valign: cs.verticalAlign === 'middle' ? 'middle' : cs.verticalAlign === 'bottom' ? 'bottom' : 'top',
+      borders: cs.borderTopStyle !== 'none' && parseFloat(cs.borderTopWidth) > 0
+    };
+  }
+
   // ---------- Buscar y reemplazar ----------
 
   let found = [];
@@ -961,6 +1417,7 @@
         h: Math.round(imageHeightPt(selectedImg)),
         maxW: Math.round(contentWidthPt())
       } : null,
+      table: tableState(),
       canUndo: hIndex > 0 || typingTimer !== null,
       canRedo: hIndex < history.length - 1
     };

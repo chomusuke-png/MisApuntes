@@ -33,6 +33,8 @@ data class EditorState(
     val painter: Boolean = false,
     /** Imagen seleccionada (null si no hay). */
     val image: ImageState? = null,
+    /** Tabla donde está el cursor (null fuera de una tabla). */
+    val table: TableState? = null,
     /** Hoja: tamaño y márgenes en puntos. */
     val page: PageState = PageState(),
     val block: String = "p",
@@ -57,6 +59,19 @@ data class PageState(
     val mr: Float = 72f,
     val mb: Float = 72f,
     val ml: Float = 72f,
+)
+
+/** Tabla del cursor: tamaño, celdas tocadas y formato de la celda actual. */
+@Serializable
+data class TableState(
+    val rows: Int = 1,
+    val cols: Int = 1,
+    /** Celdas que toca la selección (más de una: se pueden combinar). */
+    val cells: Int = 1,
+    val merged: Boolean = false,
+    val bg: String = "",
+    val valign: String = "top",
+    val borders: Boolean = true,
 )
 
 /** Imagen seleccionada: ancho en % de la hoja, alineación de su párrafo y tamaño en puntos. */

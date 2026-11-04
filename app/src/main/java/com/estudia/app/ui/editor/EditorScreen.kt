@@ -5,6 +5,16 @@ import android.content.Context
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
+import android.widget.Toast
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.CallMerge
+import androidx.compose.material.icons.automirrored.filled.CallSplit
+import androidx.compose.material.icons.filled.BorderAll
+import androidx.compose.material.icons.filled.BorderClear
+import androidx.compose.material.icons.filled.VerticalAlignCenter
+import androidx.compose.material.icons.filled.ViewWeek
+import androidx.compose.material.icons.filled.FormatColorFill
 import android.view.ViewGroup
 import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
@@ -760,6 +770,7 @@ internal fun FormattingToolbar(
             RibbonTab.REVIEW -> onFind != null || onStats != null
             RibbonTab.LAYOUT -> onLayoutChange != null
             RibbonTab.IMAGE -> image != null
+            RibbonTab.TABLE -> format.table != null
             else -> true
         }
     }
@@ -767,6 +778,10 @@ internal fun FormattingToolbar(
     LaunchedEffect(image != null) {
         if (image != null) tab = RibbonTab.IMAGE
         else if (tab == RibbonTab.IMAGE) tab = RibbonTab.HOME
+    }
+    // Al salir de la tabla su pestaña desaparece
+    LaunchedEffect(format.table != null) {
+        if (format.table == null && tab == RibbonTab.TABLE) tab = RibbonTab.HOME
     }
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Column {
@@ -791,6 +806,7 @@ internal fun FormattingToolbar(
                     RibbonTab.INSERT -> InsertTools(editor, onInsertImage)
                     RibbonTab.PARAGRAPH -> ParagraphTools(format, editor)
                     RibbonTab.IMAGE -> if (image != null) ImageTools(image, editor, onReplaceImage)
+                    RibbonTab.TABLE -> format.table?.let { TableTools(it, editor) }
                     RibbonTab.LAYOUT -> LayoutTools(format.page) { p ->
                         editor.call("editor.setPage", p.w, p.h, p.mt, p.mr, p.mb, p.ml)
                         onLayoutChange?.invoke()
@@ -812,6 +828,111 @@ private enum class RibbonTab(val label: String) {
     LAYOUT("Diseño"),
     REVIEW("Revisar"),
     IMAGE("Imagen"),
+    TABLE("Tabla"),
+}
+
+/** Colores de sombreado de celda (los claros de Word). */
+private val CELL_SHADES = listOf(
+    0xFFF2F2F2, 0xFFD9D9D9, 0xFFFFF2CC, 0xFFFBE4D5, 0xFFFADBD8, 0xFFFCE4EC,
+    0xFFE2EFD9, 0xFFDEEAF6, 0xFFD9E2F3, 0xFFEDE2F6, 0xFFFFE699, 0xFFA8D08D,
+).map { it.toInt() }
+
+/** Tabla (con el cursor dentro de una): filas y columnas, combinar y dividir, sombreado, bordes y alineación. */
+@Composable
+private fun TableTools(table: TableState, editor: WebEditor) {
+    val context = LocalContext.current
+    var splitDialog by remember { mutableStateOf(false) }
+
+    RibbonButton(Icons.Default.KeyboardArrowUp, "Fila arriba") { editor.call("tableTools.insertRow", false) }
+    RibbonButton(Icons.Default.KeyboardArrowDown, "Fila abajo") { editor.call("tableTools.insertRow", true) }
+    RibbonButton(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Col. izq.") { editor.call("tableTools.insertCol", false) }
+    RibbonButton(Icons.AutoMirrored.Filled.KeyboardArrowRight, "Col. der.") { editor.call("tableTools.insertCol", true) }
+    ChoiceMenu(
+        Icons.Default.Delete, "Eliminar",
+        listOf(
+            Choice(if (table.cells > 1) "Filas" else "Fila", null, false) { editor.call("tableTools.deleteRow") },
+            Choice(if (table.cells > 1) "Columnas" else "Columna", null, false) { editor.call("tableTools.deleteCol") },
+            Choice("Tabla", null, false) { editor.call("tableTools.deleteTable") },
+        ),
+    )
+    ToolbarDivider()
+    if (table.cells > 1) RibbonButton(Icons.AutoMirrored.Filled.CallMerge, "Combinar") { editor.call("tableTools.merge") }
+    RibbonButton(Icons.AutoMirrored.Filled.CallSplit, "Dividir") { splitDialog = true }
+    ToolbarDivider()
+    ShadeMenu(table.bg) { editor.call("tableTools.shade", it) }
+    ChoiceMenu(
+        if (table.borders) Icons.Default.BorderAll else Icons.Default.BorderClear, "Bordes",
+        listOf(
+            Choice("Todos los bordes", null, table.borders) { editor.call("tableTools.borders", true) },
+            Choice("Sin bordes", null, !table.borders) { editor.call("tableTools.borders", false) },
+        ),
+    )
+    ToolbarDivider()
+    StyleToggle(Icons.Default.VerticalAlignTop, "Texto arriba", table.valign == "top") { editor.call("tableTools.valign", "top") }
+    StyleToggle(Icons.Default.VerticalAlignCenter, "Texto al centro", table.valign == "middle") { editor.call("tableTools.valign", "middle") }
+    StyleToggle(Icons.Default.VerticalAlignBottom, "Texto abajo", table.valign == "bottom") { editor.call("tableTools.valign", "bottom") }
+    RibbonButton(Icons.Default.ViewWeek, "Igualar col.") { editor.call("tableTools.distribute") }
+
+    if (splitDialog) SplitDialog(onDismiss = { splitDialog = false }) { cols, rows ->
+        splitDialog = false
+        editor.eval("String(tableTools.split($cols,$rows))") { ok ->
+            if (ok == "false") {
+                Toast.makeText(context, "La celda combinada no se puede repartir en $rows filas iguales", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShadeMenu(current: String, onSelect: (String?) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val selected = parseCssColor(current)
+    Box {
+        Column(
+            Modifier
+                .clickable { open = true }
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(Icons.Default.FormatColorFill, null, modifier = Modifier.size(22.dp))
+            Box(Modifier.width(20.dp).height(3.dp).background(selected?.let(::Color) ?: Color.Transparent))
+            Text("Sombreado", fontSize = 11.sp, maxLines = 1)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            CELL_SHADES.chunked(6).forEach { row ->
+                Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                    row.forEach { color ->
+                        Box(Modifier.padding(4.dp)) {
+                            Swatch(color, selected = selected == color, size = 30) { open = false; onSelect(cssColor(color)) }
+                        }
+                    }
+                }
+            }
+            DropdownMenuItem(
+                text = { Text("Sin color") },
+                leadingIcon = { Icon(Icons.Default.FormatColorReset, null) },
+                onClick = { open = false; onSelect(null) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SplitDialog(onDismiss: () -> Unit, onSplit: (Int, Int) -> Unit) {
+    var cols by remember { mutableIntStateOf(2) }
+    var rows by remember { mutableIntStateOf(1) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Dividir celda") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Stepper("Columnas", cols, 1..12) { cols = it }
+                Stepper("Filas", rows, 1..20) { rows = it }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSplit(cols, rows) }, enabled = cols * rows > 1) { Text("Dividir") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
 }
 
 private class PaperSize(val label: String, val detail: String, val w: Float, val h: Float)

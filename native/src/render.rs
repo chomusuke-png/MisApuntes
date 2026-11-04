@@ -389,7 +389,12 @@ impl<'a> Renderer<'a> {
         }
 
         for (r, row) in t.rows.iter().enumerate() {
-            out.push_str("<tr>");
+            // data-tr: fila de origen (las herramientas de tabla copian su formato al rehacerla)
+            let _ = write!(out, "<tr data-tr=\"{r}\"");
+            if row.props.grid_before > 0 {
+                let _ = write!(out, " data-gb=\"{}\"", row.props.grid_before);
+            }
+            out.push('>');
             for (c, cell) in row.cells.iter().enumerate() {
                 if matches!(cell.props.vmerge, wordcraft_doc::props::VMerge::Continue) {
                     continue;
@@ -407,6 +412,11 @@ impl<'a> Renderer<'a> {
                 }
                 if let Some(bg) = cell.props.shading {
                     let _ = write!(out, "background-color:{};", hex(bg));
+                }
+                match cell.props.valign {
+                    Some(wordcraft_doc::props::VAlign::Center) => out.push_str("vertical-align:middle;"),
+                    Some(wordcraft_doc::props::VAlign::Bottom) => out.push_str("vertical-align:bottom;"),
+                    _ => {}
                 }
                 out.push_str("\">");
                 let start = out.len();
