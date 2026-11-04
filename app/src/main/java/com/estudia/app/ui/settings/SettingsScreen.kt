@@ -3,13 +3,17 @@ package com.estudia.app.ui.settings
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.VerticalAlignBottom
+import androidx.compose.material.icons.filled.VerticalAlignTop
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -26,6 +30,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.estudia.app.EstudiaApp
 import com.estudia.app.data.ThemeMode
+import com.estudia.app.data.ToolbarPosition
 import com.estudia.app.ui.theme.appBarColors
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -43,7 +48,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             )
         },
     ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
+        Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())) {
             Text(
                 "Tema",
                 style = MaterialTheme.typography.titleSmall,
@@ -74,6 +79,41 @@ fun SettingsScreen(onBack: () -> Unit) {
                     )
                 }
             }
+            Text(
+                "Barra de herramientas",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 4.dp),
+            )
+            Column(Modifier.selectableGroup()) {
+                ToolbarPosition.entries.forEach { position ->
+                    val selected = settings.toolbarPosition == position
+                    ListItem(
+                        headlineContent = { Text(position.label) },
+                        leadingContent = {
+                            Icon(
+                                when (position) {
+                                    ToolbarPosition.TOP -> Icons.Default.VerticalAlignTop
+                                    ToolbarPosition.BOTTOM -> Icons.Default.VerticalAlignBottom
+                                },
+                                contentDescription = null,
+                            )
+                        },
+                        trailingContent = { RadioButton(selected = selected, onClick = null) },
+                        modifier = Modifier.selectable(
+                            selected = selected,
+                            role = Role.RadioButton,
+                            onClick = { settings.updateToolbarPosition(position) },
+                        ),
+                    )
+                }
+            }
+            Text(
+                "Se aplica a documentos, notas y PDF.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
         }
     }
 }

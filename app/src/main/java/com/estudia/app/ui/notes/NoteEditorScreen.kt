@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
@@ -73,6 +74,7 @@ import com.estudia.app.EstudiaApp
 import com.estudia.app.data.ColorKind
 import com.estudia.app.data.EditorContent
 import com.estudia.app.data.StickyNoteEntity
+import com.estudia.app.data.ToolbarPosition
 import com.estudia.app.ui.components.ConfirmDialog
 import com.estudia.app.ui.components.HIGHLIGHT_PRESETS
 import com.estudia.app.ui.editor.EditorBridge
@@ -234,10 +236,27 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
         }
     }
 
+    val toolbarOnTop = (context.applicationContext as EstudiaApp).settings.toolbarPosition == ToolbarPosition.TOP
+    val toolbar: @Composable () -> Unit = {
+        FormattingToolbar(
+            format = format,
+            quickHighlight = quickHighlight,
+            recentHighlights = recentHighlights,
+            editor = editor,
+            onHighlight = ::highlight,
+            onPick = { picker = it },
+            onInsertImage = { replacingImage = false; imageDialog = true },
+            onReplaceImage = { replacingImage = true; imageDialog = true },
+        )
+    }
+
     Scaffold(
         modifier = Modifier.imePadding(),
+        bottomBar = {
+            if (!toolbarOnTop) Column(Modifier.navigationBarsPadding()) { toolbar() }
+        },
         topBar = {
-            // Herramientas justo debajo de la barra superior
+            // Herramientas justo debajo de la barra superior, salvo que en Ajustes se pidan abajo
             Column {
             TopAppBar(
                 title = { Text("Nota") },
@@ -267,16 +286,7 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
                 },
                 colors = appBarColors(),
             )
-            FormattingToolbar(
-                format = format,
-                quickHighlight = quickHighlight,
-                recentHighlights = recentHighlights,
-                editor = editor,
-                onHighlight = ::highlight,
-                onPick = { picker = it },
-                onInsertImage = { replacingImage = false; imageDialog = true },
-                onReplaceImage = { replacingImage = true; imageDialog = true },
-            )
+            if (toolbarOnTop) toolbar()
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },

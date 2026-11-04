@@ -181,6 +181,8 @@ import com.estudia.app.ui.components.FastScrollbar
 import com.estudia.app.ui.components.HIGHLIGHT_PRESETS
 import com.estudia.app.ui.components.NameDialog
 import com.estudia.app.ui.components.Swatch
+import com.estudia.app.EstudiaApp
+import com.estudia.app.data.ToolbarPosition
 import com.estudia.app.ui.components.TEXT_PRESETS
 import com.estudia.app.ui.theme.appBarColors
 import com.estudia.app.ui.notes.NOTE_COLORS
@@ -439,11 +441,66 @@ fun EditorScreen(
     LaunchedEffect(pageView) { pageView?.let { editor.call("editor.setMode", if (it) "page" else "mobile") } }
     LaunchedEffect(darkTheme) { editor.call("editor.setDark", darkTheme) }
 
+    val toolbarOnTop = (context.applicationContext as EstudiaApp).settings.toolbarPosition == ToolbarPosition.TOP
+    val toolbars: @Composable () -> Unit = {
+        when {
+            editing == true -> FormattingToolbar(
+                format = format,
+                quickHighlight = quickHighlight,
+                recentHighlights = recentHighlights,
+                editor = editor,
+                onHighlight = ::highlight,
+                onPick = { picker = it },
+                onInsertImage = {
+                    replacingImage = false
+                    gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                onReplaceImage = {
+                    replacingImage = true
+                    gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                onFind = { finding = true },
+                onLayoutChange = { pageView = true },
+                onStats = { editor.eval("docStats()") { stats = it } },
+                onHeaderFooter = ::openHeaders,
+                docTitle = doc?.title.orEmpty(),
+                onLogo = {
+                    pickingLogo = true
+                    gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+            )
+            format.hasSelection -> HighlightBar(
+                colors = (recentHighlights + HIGHLIGHT_PRESETS).distinct().take(8),
+                onHighlight = ::highlight,
+                onPick = { picker = ColorKind.HIGHLIGHT },
+                onRemove = { highlight(null) },
+            )
+        }
+        if (finding && editing == true) {
+            FindBar(
+                found = found,
+                onSearch = { editor.call("finder.search", it) },
+                onNext = { editor.call("finder.next") },
+                onPrev = { editor.call("finder.prev") },
+                onReplace = { editor.call("finder.replace", it) },
+                onReplaceAll = { text ->
+                    editor.eval("String(finder.replaceAll(${Json.encodeToString(String.serializer(), text)}))") { n ->
+                        scope.launch { snackbar.showSnackbar(if (n == "1") "1 reemplazo" else "$n reemplazos") }
+                    }
+                },
+                onClose = { finding = false; found = 0 to 0; editor.call("finder.clear") },
+            )
+        }
+    }
+
     Scaffold(
         modifier = Modifier.imePadding(),
         snackbarHost = { SnackbarHost(snackbar) },
+        bottomBar = {
+            if (!toolbarOnTop) Column(Modifier.navigationBarsPadding()) { toolbars() }
+        },
         topBar = {
-            // Herramientas justo debajo de la barra superior
+            // Herramientas justo debajo de la barra superior, salvo que en Ajustes se pidan abajo
             Column {
             TopAppBar(
                 title = {
@@ -506,54 +563,7 @@ fun EditorScreen(
                 },
                 colors = appBarColors(),
             )
-            when {
-                editing == true -> FormattingToolbar(
-                    format = format,
-                    quickHighlight = quickHighlight,
-                    recentHighlights = recentHighlights,
-                    editor = editor,
-                    onHighlight = ::highlight,
-                    onPick = { picker = it },
-                    onInsertImage = {
-                        replacingImage = false
-                        gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
-                    onReplaceImage = {
-                        replacingImage = true
-                        gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
-                    onFind = { finding = true },
-                    onLayoutChange = { pageView = true },
-                    onStats = { editor.eval("docStats()") { stats = it } },
-                    onHeaderFooter = ::openHeaders,
-                    docTitle = doc?.title.orEmpty(),
-                    onLogo = {
-                        pickingLogo = true
-                        gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
-                )
-                format.hasSelection -> HighlightBar(
-                    colors = (recentHighlights + HIGHLIGHT_PRESETS).distinct().take(8),
-                    onHighlight = ::highlight,
-                    onPick = { picker = ColorKind.HIGHLIGHT },
-                    onRemove = { highlight(null) },
-                )
-            }
-            if (finding && editing == true) {
-                FindBar(
-                    found = found,
-                    onSearch = { editor.call("finder.search", it) },
-                    onNext = { editor.call("finder.next") },
-                    onPrev = { editor.call("finder.prev") },
-                    onReplace = { editor.call("finder.replace", it) },
-                    onReplaceAll = { text ->
-                        editor.eval("String(finder.replaceAll(${Json.encodeToString(String.serializer(), text)}))") { n ->
-                            scope.launch { snackbar.showSnackbar(if (n == "1") "1 reemplazo" else "$n reemplazos") }
-                        }
-                    },
-                    onClose = { finding = false; found = 0 to 0; editor.call("finder.clear") },
-                )
-            }
+            if (toolbarOnTop) toolbars()
             }
         },
         floatingActionButton = {
