@@ -11,7 +11,7 @@ import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
 import java.io.File
 import java.io.OutputStream
 
-/** Dibuja los resaltados dentro del PDF (modo "multiplicar", como un marcador real). */
+/** Dibuja las anotaciones dentro del PDF: el destacador en modo "multiplicar", como un marcador real, y el lápiz opaco. */
 object PdfExporter {
 
     fun export(context: Context, source: File, strokes: List<PdfStroke>, out: OutputStream) {
@@ -29,7 +29,7 @@ object PdfExporter {
                         if (s.points.size < 2) continue
                         cs.setGraphicsStateParameters(
                             PDExtendedGraphicsState().apply {
-                                blendMode = BlendMode.MULTIPLY
+                                blendMode = if (s.pen) BlendMode.NORMAL else BlendMode.MULTIPLY
                                 strokingAlphaConstant = s.alpha.coerceIn(0f, 1f)
                             }
                         )

@@ -48,7 +48,7 @@ fun htmlToPlainText(html: String): String =
 class EditorContent(val html: String, val baseDir: File)
 
 /**
- * Trazo de resaltador sobre una página de PDF. Las coordenadas van de 0 a 1 respecto
+ * Trazo de destacador o lápiz sobre una página de PDF. Las coordenadas van de 0 a 1 respecto
  * al ancho/alto de la página, así no dependen del zoom. points = x0, y0, x1, y1…
  */
 @Serializable
@@ -60,6 +60,8 @@ data class PdfStroke(
     val straight: Boolean = false,
     /** Opacidad del marcador (0..1). Los trazos anteriores a esta opción son opacos. */
     val alpha: Float = 1f,
+    /** Lápiz: tapa lo que hay debajo. Si no, destacador (los trazos anteriores a esta opción). */
+    val pen: Boolean = false,
 )
 
 class Repository(private val context: Context, private val db: AppDatabase) {

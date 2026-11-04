@@ -62,18 +62,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.BorderColor
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Gesture
 import androidx.compose.material.icons.filled.HorizontalRule
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PanTool
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.outlined.PushPin
@@ -93,7 +94,6 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -113,11 +113,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathFillType
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -133,10 +137,12 @@ import com.estudia.app.EstudiaApp
 import com.estudia.app.data.ColorKind
 import com.estudia.app.data.DocumentEntity
 import com.estudia.app.data.PdfStroke
+import com.estudia.app.data.ToolbarPosition
 import com.estudia.app.ui.components.ColorPickerDialog
 import com.estudia.app.ui.components.FastScrollbar
 import com.estudia.app.ui.components.HIGHLIGHT_PRESETS
 import com.estudia.app.ui.components.Swatch
+import com.estudia.app.ui.components.TEXT_PRESETS
 import com.estudia.app.ui.theme.appBarColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -154,12 +160,36 @@ import kotlin.math.hypot
 import kotlin.math.roundToInt
 import androidx.compose.ui.graphics.Color as ComposeColor
 
-private enum class Tool { FREE, STRAIGHT, ERASER }
+/** Qué hace un dedo sobre la página. */
+private enum class Tool(val label: String) {
+    HAND("Mano"),
+    PEN("Lápiz"),
+    HIGHLIGHT("Destacador"),
+    ERASER("Borrador"),
+    NOTE("Nota");
 
-/** Grosor del marcador como fracción del ancho de la página. */
+    /** Un dedo dibuja o borra, así que moverse queda para dos dedos. */
+    val draws get() = this == PEN || this == HIGHLIGHT || this == ERASER
+    val hasOptions get() = this == PEN || this == HIGHLIGHT
+}
+
+/** Grosores como fracción del ancho de la página. */
 private const val MIN_WIDTH = 0.004f
 private const val MAX_WIDTH = 0.07f
+private const val MIN_PEN_WIDTH = 0.001f
+private const val MAX_PEN_WIDTH = 0.012f
 private const val MIN_OPACITY = 0.1f
+
+private val EraserIcon: ImageVector = ImageVector.Builder("Eraser", 24.dp, 24.dp, 24f, 24f)
+    .addPath(
+        pathData = addPathNodes(
+            "M16.24 3.56l4.95 4.95c.78.79.78 2.05 0 2.84L12 20.53a4 4 0 0 1-5.66 0L2.81 17c-.79-.79-.79-2.05 0-2.84" +
+                "l10.6-10.6c.79-.78 2.05-.78 2.83 0zM4.22 15.58l3.54 3.53c.78.79 2.04.79 2.83 0l3.53-3.53-4.95-4.95-4.95 4.95z"
+        ),
+        pathFillType = PathFillType.EvenOdd,
+        fill = SolidColor(ComposeColor.Black),
+    )
+    .build()
 
 class PdfViewModel(app: Application, savedState: SavedStateHandle) : AndroidViewModel(app) {
     private val repo = (app as EstudiaApp).repository
@@ -183,6 +213,9 @@ class PdfViewModel(app: Application, savedState: SavedStateHandle) : AndroidView
     private var saveJob: Job? = null
 
     val recentHighlights = repo.recentColors.recent(ColorKind.HIGHLIGHT)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val recentPenColors = repo.recentColors.recent(ColorKind.TEXT)
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val notes = repo.stickyNotes.forDocument(docId)
@@ -240,7 +273,7 @@ class PdfViewModel(app: Application, savedState: SavedStateHandle) : AndroidView
         }
     }
 
-    // ---------- Resaltados ----------
+    // ---------- Trazos ----------
 
     private fun change(newList: List<PdfStroke>) {
         undoStack.addLast(strokes.value)
@@ -262,7 +295,7 @@ class PdfViewModel(app: Application, savedState: SavedStateHandle) : AndroidView
 
     fun addStroke(stroke: PdfStroke) {
         change(strokes.value + stroke)
-        repo.rememberColor(ColorKind.HIGHLIGHT, stroke.color)
+        repo.rememberColor(if (stroke.pen) ColorKind.TEXT else ColorKind.HIGHLIGHT, stroke.color)
     }
 
     fun removeStroke(stroke: PdfStroke) {
@@ -285,7 +318,7 @@ class PdfViewModel(app: Application, savedState: SavedStateHandle) : AndroidView
         val doc = document.value ?: return@launch
         busy.value = true
         runCatching { repo.exportPdf(doc, strokes.value, uri) }
-            .onSuccess { messages.emit("PDF guardado con tus resaltados") }
+            .onSuccess { messages.emit("PDF guardado con tus anotaciones") }
             .onFailure { messages.emit("No se pudo exportar: ${it.message}") }
         busy.value = false
     }
@@ -350,11 +383,11 @@ fun PdfViewerScreen(
     val canUndo by vm.canUndo.collectAsState()
     val canRedo by vm.canRedo.collectAsState()
     val recent by vm.recentHighlights.collectAsState()
+    val recentPen by vm.recentPenColors.collectAsState()
     val notes by vm.notes.collectAsState()
     val recentNoteColors by vm.recentNoteColors.collectAsState()
 
     // Notas: colocar una nueva, ver la tocada, índice y salto con aviso visual
-    var placing by rememberSaveable { mutableStateOf(false) }
     var pendingPlace by remember { mutableStateOf<Triple<Int, Float, Float>?>(null) }
     var openNoteId by rememberSaveable { mutableStateOf<Long?>(null) }
     var indexOpen by remember { mutableStateOf(false) }
@@ -368,12 +401,22 @@ fun PdfViewerScreen(
     val snackbar = remember { SnackbarHostState() }
     var menu by remember { mutableStateOf(false) }
 
-    var highlighting by rememberSaveable { mutableStateOf(false) }
-    var tool by rememberSaveable { mutableStateOf(Tool.FREE) }
+    var tool by rememberSaveable { mutableStateOf(Tool.HAND) }
+    var optionsOpen by rememberSaveable { mutableStateOf(false) }
     val settings = (LocalContext.current.applicationContext as EstudiaApp).settings
-    var color by rememberSaveable { mutableIntStateOf(HIGHLIGHT_PRESETS.first()) }
+    val toolbarOnTop = settings.toolbarPosition == ToolbarPosition.TOP
+    // Cada herramienta recuerda su propio color
+    var highlightColor by rememberSaveable { mutableIntStateOf(HIGHLIGHT_PRESETS.first()) }
+    var penColor by rememberSaveable { mutableIntStateOf(TEXT_PRESETS.first()) }
     var pickerOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(recent.firstOrNull()) { recent.firstOrNull()?.let { if (color == HIGHLIGHT_PRESETS.first()) color = it } }
+    LaunchedEffect(recent.firstOrNull()) { recent.firstOrNull()?.let { if (highlightColor == HIGHLIGHT_PRESETS.first()) highlightColor = it } }
+    LaunchedEffect(recentPen.firstOrNull()) { recentPen.firstOrNull()?.let { if (penColor == TEXT_PRESETS.first()) penColor = it } }
+
+    // Volver a tocar la herramienta activa muestra u oculta sus opciones
+    fun selectTool(t: Tool) {
+        optionsOpen = t.hasOptions && (t != tool || !optionsOpen)
+        tool = t
+    }
 
     val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
         uri?.let(vm::exportTo)
@@ -387,8 +430,13 @@ fun PdfViewerScreen(
     val notesByPage = remember(notes) { notes.groupBy { it.page } }
 
     Scaffold(
+        bottomBar = {
+            if (!toolbarOnTop && ratios != null) {
+                PdfToolbar(tool, penColor, highlightColor, atBottom = true, onTool = ::selectTool)
+            }
+        },
         topBar = {
-            // Herramientas justo debajo de la barra superior
+            // Herramientas justo debajo de la barra superior, salvo que en Ajustes se pidan abajo
             Column {
             TopAppBar(
                 title = { Text(doc?.title.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -396,58 +444,39 @@ fun PdfViewerScreen(
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") }
                 },
                 actions = {
-                    if (highlighting) {
-                        IconButton(onClick = vm::undo, enabled = canUndo) { Icon(Icons.AutoMirrored.Filled.Undo, "Deshacer") }
-                        IconButton(onClick = vm::redo, enabled = canRedo) { Icon(Icons.AutoMirrored.Filled.Redo, "Rehacer") }
-                        IconButton(onClick = { highlighting = false }) { Icon(Icons.Default.Check, "Terminar de resaltar") }
-                    } else {
-                        NotesIndexButton(notes.size) { indexOpen = true }
-                        IconButton(onClick = { placing = false; highlighting = true }) { Icon(Icons.Default.BorderColor, "Resaltar") }
-                        Box {
-                            IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
-                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                                DropdownMenuItem(
-                                    text = { Text(if (doc?.pinned == true) "Quitar de fijados" else "Fijar") },
-                                    leadingIcon = {
-                                        Icon(if (doc?.pinned == true) Icons.Outlined.PushPin else Icons.Filled.PushPin, null)
-                                    },
-                                    onClick = { menu = false; vm.togglePin() },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Guardar copia con resaltados") },
-                                    leadingIcon = { Icon(Icons.Default.SaveAlt, null) },
-                                    enabled = strokes.isNotEmpty(),
-                                    onClick = { menu = false; exporter.launch("${doc?.title ?: "documento"} (resaltado).pdf") },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Convertir en nota editable") },
-                                    leadingIcon = { Icon(Icons.Default.EditNote, null) },
-                                    onClick = { menu = false; vm.createEditableNote() },
-                                )
-                            }
+                    IconButton(onClick = vm::undo, enabled = canUndo) { Icon(Icons.AutoMirrored.Filled.Undo, "Deshacer") }
+                    IconButton(onClick = vm::redo, enabled = canRedo) { Icon(Icons.AutoMirrored.Filled.Redo, "Rehacer") }
+                    NotesIndexButton(notes.size) { indexOpen = true }
+                    Box {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(
+                                text = { Text(if (doc?.pinned == true) "Quitar de fijados" else "Fijar") },
+                                leadingIcon = {
+                                    Icon(if (doc?.pinned == true) Icons.Outlined.PushPin else Icons.Filled.PushPin, null)
+                                },
+                                onClick = { menu = false; vm.togglePin() },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Guardar copia con anotaciones") },
+                                leadingIcon = { Icon(Icons.Default.SaveAlt, null) },
+                                enabled = strokes.isNotEmpty(),
+                                onClick = { menu = false; exporter.launch("${doc?.title ?: "documento"} (anotado).pdf") },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Convertir en nota editable") },
+                                leadingIcon = { Icon(Icons.Default.EditNote, null) },
+                                onClick = { menu = false; vm.createEditableNote() },
+                            )
                         }
                     }
                 },
                 colors = appBarColors(),
             )
-            if (highlighting) {
-                HighlighterBar(
-                    tool = tool,
-                    onTool = { tool = it },
-                    width = settings.highlighterWidth,
-                    onWidth = settings::updateHighlighterWidth,
-                    opacity = settings.highlighterOpacity,
-                    onOpacity = settings::updateHighlighterOpacity,
-                    color = color,
-                    colors = (recent + HIGHLIGHT_PRESETS).distinct().take(10),
-                    onColor = { color = it; if (tool == Tool.ERASER) tool = Tool.FREE },
-                    onPick = { pickerOpen = true },
-                )
+            if (toolbarOnTop && ratios != null) {
+                PdfToolbar(tool, penColor, highlightColor, atBottom = false, onTool = ::selectTool)
             }
             }
-        },
-        floatingActionButton = {
-            if (!highlighting && !placing && ratios != null) AddNoteFab { placing = true }
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
@@ -457,7 +486,7 @@ fun PdfViewerScreen(
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .pointerInput(Unit) {
-                    // Dos dedos: zoom y desplazamiento (también mientras se resalta con un dedo)
+                    // Dos dedos: zoom y desplazamiento, con cualquier herramienta
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
                         do {
@@ -485,10 +514,10 @@ fun PdfViewerScreen(
                         val bucket = (scale * 2).roundToInt().coerceIn(2, 6) / 2f
                         (maxWidth.toPx() * bucket).roundToInt().coerceAtMost(3000)
                     }
-                    Box(Modifier.fillMaxSize().horizontalScroll(hScroll, enabled = !highlighting)) {
+                    Box(Modifier.fillMaxSize().horizontalScroll(hScroll, enabled = !tool.draws)) {
                         LazyColumn(
                             state = listState,
-                            userScrollEnabled = !highlighting,
+                            userScrollEnabled = !tool.draws,
                             modifier = Modifier.width(pageWidth).fillMaxHeight(),
                             contentPadding = PaddingValues(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -500,16 +529,16 @@ fun PdfViewerScreen(
                                     ratio = pages[index],
                                     widthPx = renderWidthPx,
                                     strokes = strokesByPage[index].orEmpty(),
-                                    tool = if (highlighting) tool else null,
-                                    color = color,
-                                    strokeWidth = settings.highlighterWidth,
-                                    strokeAlpha = settings.highlighterOpacity,
+                                    tool = tool,
+                                    color = if (tool == Tool.PEN) penColor else highlightColor,
+                                    strokeWidth = if (tool == Tool.PEN) settings.penWidth else settings.highlighterWidth,
+                                    strokeAlpha = if (tool == Tool.PEN) 1f else settings.highlighterOpacity,
+                                    straightLine = tool == Tool.HIGHLIGHT && settings.highlighterStraight,
+                                    onDrawStart = { optionsOpen = false },
                                     notes = notesByPage[index].orEmpty(),
-                                    notesInteractive = !highlighting && !placing,
-                                    placing = placing,
                                     pulse = pulse,
                                     onPlace = { x, y ->
-                                        placing = false
+                                        tool = Tool.HAND
                                         pendingPlace = Triple(index, x, y)
                                     },
                                     onNoteTap = { openNoteId = it.id },
@@ -535,8 +564,8 @@ fun PdfViewerScreen(
                         pulse = n.id to System.nanoTime()
                     }
 
-                    if (placing) {
-                        PlacingBanner(onCancel = { placing = false }, modifier = Modifier.align(Alignment.TopCenter))
+                    if (tool == Tool.NOTE) {
+                        PlacingBanner(onCancel = { tool = Tool.HAND }, modifier = Modifier.align(Alignment.TopCenter))
                     }
                     if (pages.size > 1) {
                         // Posición como "página + fracción de página", sobre las páginas que pueden quedar arriba
@@ -569,19 +598,56 @@ fun PdfViewerScreen(
                             label = { f -> "Página ${targetFor(f).first + 1} / ${pages.size}" },
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
-                                .padding(top = 8.dp, bottom = if (highlighting) 8.dp else 88.dp),
+                                .padding(vertical = 8.dp),
                         )
                     }
                     if (busy) CircularProgressIndicator(Modifier.align(Alignment.Center))
-                    Surface(
-                        shape = MaterialTheme.shapes.small,
-                        tonalElevation = 4.dp,
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
-                    ) {
-                        Text(
-                            if (highlighting) "Usa dos dedos para moverte · $currentPage / ${pages.size}" else "$currentPage / ${pages.size}",
-                            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        )
+                    // Del lado contrario a la barra, para que el panel de opciones no lo tape
+                    if (tool != Tool.NOTE) {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            tonalElevation = 4.dp,
+                            modifier = Modifier
+                                .align(if (toolbarOnTop) Alignment.BottomCenter else Alignment.TopCenter)
+                                .padding(16.dp),
+                        ) {
+                            Text(
+                                if (tool.draws) "Usa dos dedos para moverte · $currentPage / ${pages.size}" else "$currentPage / ${pages.size}",
+                                Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            )
+                        }
+                    }
+                    if (optionsOpen && tool.hasOptions) {
+                        val panelModifier = Modifier
+                            .align(if (toolbarOnTop) Alignment.TopCenter else Alignment.BottomCenter)
+                            .padding(8.dp)
+                        if (tool == Tool.PEN) {
+                            ToolOptions(
+                                color = penColor,
+                                colors = (recentPen + TEXT_PRESETS).distinct().take(10),
+                                onColor = { penColor = it },
+                                onPick = { pickerOpen = true },
+                                width = settings.penWidth,
+                                widthRange = MIN_PEN_WIDTH..MAX_PEN_WIDTH,
+                                onWidth = settings::updatePenWidth,
+                                modifier = panelModifier,
+                            )
+                        } else {
+                            ToolOptions(
+                                color = highlightColor,
+                                colors = (recent + HIGHLIGHT_PRESETS).distinct().take(10),
+                                onColor = { highlightColor = it },
+                                onPick = { pickerOpen = true },
+                                width = settings.highlighterWidth,
+                                widthRange = MIN_WIDTH..MAX_WIDTH,
+                                onWidth = settings::updateHighlighterWidth,
+                                modifier = panelModifier,
+                                straight = settings.highlighterStraight,
+                                onStraight = settings::updateHighlighterStraight,
+                                opacity = settings.highlighterOpacity,
+                                onOpacity = settings::updateHighlighterOpacity,
+                            )
+                        }
                     }
                 }
             }
@@ -626,21 +692,21 @@ fun PdfViewerScreen(
         )
     }
 
-    BackHandler(enabled = placing || highlighting) {
-        if (placing) placing = false else highlighting = false
+    BackHandler(enabled = optionsOpen || tool != Tool.HAND) {
+        if (optionsOpen) optionsOpen = false else tool = Tool.HAND
     }
 
     if (pickerOpen) {
+        val pen = tool == Tool.PEN
         ColorPickerDialog(
-            title = "Color del marcador",
-            initial = color,
-            recent = recent,
-            presets = HIGHLIGHT_PRESETS,
+            title = if (pen) "Color del lápiz" else "Color del destacador",
+            initial = if (pen) penColor else highlightColor,
+            recent = if (pen) recentPen else recent,
+            presets = if (pen) TEXT_PRESETS else HIGHLIGHT_PRESETS,
             onDismiss = { pickerOpen = false },
             onPick = {
                 pickerOpen = false
-                color = it
-                if (tool == Tool.ERASER) tool = Tool.FREE
+                if (pen) penColor = it else highlightColor = it
             },
         )
     }
@@ -653,13 +719,13 @@ private fun PdfPage(
     ratio: Float,
     widthPx: Int,
     strokes: List<PdfStroke>,
-    tool: Tool?,
+    tool: Tool,
     color: Int,
     strokeWidth: Float,
     strokeAlpha: Float,
+    straightLine: Boolean,
+    onDrawStart: () -> Unit,
     notes: List<StickyNoteEntity>,
-    notesInteractive: Boolean,
-    placing: Boolean,
     pulse: Pair<Long, Long>?,
     onPlace: (Float, Float) -> Unit,
     onNoteTap: (StickyNoteEntity) -> Unit,
@@ -686,9 +752,10 @@ private fun PdfPage(
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        val drawModifier = if (tool == null) Modifier else Modifier.pointerInput(tool, color, strokeWidth, strokeAlpha) {
+        val drawModifier = if (!tool.draws) Modifier else Modifier.pointerInput(tool, color, strokeWidth, strokeAlpha, straightLine) {
             awaitEachGesture {
                 val down = awaitFirstDown()
+                onDrawStart()
                 val w = size.width.toFloat()
                 val h = size.height.toFloat()
 
@@ -703,8 +770,9 @@ private fun PdfPage(
 
                 val start = down.position
                 val points = mutableListOf(start.x / w, start.y / h)
-                val straight = tool == Tool.STRAIGHT
-                current = PdfStroke(index, color, strokeWidth, points.toList(), straight, strokeAlpha)
+                val straight = straightLine
+                val pen = tool == Tool.PEN
+                current = PdfStroke(index, color, strokeWidth, points.toList(), straight, strokeAlpha, pen)
                 val completed = drag(down.id) { change ->
                     val p = change.position
                     if (straight) {
@@ -713,7 +781,7 @@ private fun PdfPage(
                     } else {
                         points += listOf(p.x.coerceIn(0f, w) / w, p.y.coerceIn(0f, h) / h)
                     }
-                    current = PdfStroke(index, color, strokeWidth, points.toList(), straight, strokeAlpha)
+                    current = PdfStroke(index, color, strokeWidth, points.toList(), straight, strokeAlpha, pen)
                     change.consume()
                 }
                 val stroke = current
@@ -726,7 +794,7 @@ private fun PdfPage(
             current?.let { drawHighlight(it) }
         }
 
-        if (placing) {
+        if (tool == Tool.NOTE) {
             Box(
                 Modifier
                     .fillMaxSize()
@@ -738,7 +806,7 @@ private fun PdfPage(
         if (pageSize != IntSize.Zero) {
             notes.forEach { note ->
                 key(note.id) {
-                    PageNoteMarker(note, pageSize, notesInteractive, pulse, onNoteTap, onNoteMoved)
+                    PageNoteMarker(note, pageSize, tool == Tool.HAND, pulse, onNoteTap, onNoteMoved)
                 }
             }
         }
@@ -821,7 +889,7 @@ internal fun AddNoteFab(onClick: () -> Unit) {
     )
 }
 
-/** Marcador: color opaco en modo multiplicar, así el texto negro sigue viéndose negro. */
+/** Lápiz: opaco. Destacador: en modo multiplicar, así el texto negro sigue viéndose negro. */
 private fun DrawScope.drawHighlight(stroke: PdfStroke) {
     val pts = stroke.points
     if (pts.size < 2) return
@@ -842,7 +910,7 @@ private fun DrawScope.drawHighlight(stroke: PdfStroke) {
             cap = if (stroke.straight) StrokeCap.Square else StrokeCap.Round,
             join = StrokeJoin.Round,
         ),
-        blendMode = BlendMode.Multiply,
+        blendMode = if (stroke.pen) BlendMode.SrcOver else BlendMode.Multiply,
     )
 }
 
@@ -864,74 +932,143 @@ private fun hits(stroke: PdfStroke, p: Offset, w: Float, h: Float, margin: Float
     return false
 }
 
+/** Barra de herramientas del PDF; va arriba o abajo según los ajustes. */
 @Composable
-private fun HighlighterBar(
-    tool: Tool,
-    onTool: (Tool) -> Unit,
-    width: Float,
-    onWidth: (Float) -> Unit,
-    opacity: Float,
-    onOpacity: (Float) -> Unit,
+private fun PdfToolbar(tool: Tool, penColor: Int, highlightColor: Int, atBottom: Boolean, onTool: (Tool) -> Unit) {
+    Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .then(if (atBottom) Modifier.navigationBarsPadding() else Modifier)
+        ) {
+            Tool.entries.forEach { t ->
+                val selected = t == tool
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .clickable { onTool(t) }
+                        .padding(top = 6.dp, bottom = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    val c = MaterialTheme.colorScheme
+                    Box(
+                        Modifier
+                            .size(width = 48.dp, height = 28.dp)
+                            .background(if (selected) c.primaryContainer else ComposeColor.Transparent, RoundedCornerShape(14.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            when (t) {
+                                Tool.HAND -> Icons.Default.PanTool
+                                Tool.PEN -> Icons.Default.Edit
+                                Tool.HIGHLIGHT -> Icons.Default.BorderColor
+                                Tool.ERASER -> EraserIcon
+                                Tool.NOTE -> Icons.Default.AddComment
+                            },
+                            contentDescription = null,
+                            tint = if (selected) c.onPrimaryContainer else c.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        // Color actual de la herramienta
+                        val dot = when (t) {
+                            Tool.PEN -> penColor
+                            Tool.HIGHLIGHT -> highlightColor
+                            else -> null
+                        }
+                        if (dot != null) {
+                            Box(
+                                Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(top = 2.dp, end = 8.dp)
+                                    .size(9.dp)
+                                    .background(ComposeColor(dot), CircleShape)
+                            )
+                        }
+                    }
+                    Text(
+                        t.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (selected) c.onSurface else c.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Opciones de la herramienta activa, flotando sobre la página. */
+@Composable
+private fun ToolOptions(
     color: Int,
     colors: List<Int>,
     onColor: (Int) -> Unit,
     onPick: () -> Unit,
+    width: Float,
+    widthRange: ClosedFloatingPointRange<Float>,
+    onWidth: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+    /** Solo el destacador elige entre recto y libre, y su opacidad. */
+    straight: Boolean? = null,
+    onStraight: (Boolean) -> Unit = {},
+    opacity: Float? = null,
+    onOpacity: (Float) -> Unit = {},
 ) {
-    Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
-        Column {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 3.dp,
+        shadowElevation = 4.dp,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                FilterChip(
-                    selected = tool == Tool.FREE,
-                    onClick = { onTool(Tool.FREE) },
-                    label = { Text("Libre") },
-                    leadingIcon = { Icon(Icons.Default.Gesture, null, Modifier.size(18.dp)) },
-                )
-                FilterChip(
-                    selected = tool == Tool.STRAIGHT,
-                    onClick = { onTool(Tool.STRAIGHT) },
-                    label = { Text("Recto") },
-                    leadingIcon = { Icon(Icons.Default.HorizontalRule, null, Modifier.size(18.dp)) },
-                )
-                FilterChip(
-                    selected = tool == Tool.ERASER,
-                    onClick = { onTool(Tool.ERASER) },
-                    label = { Text("Borrar") },
-                    leadingIcon = { Icon(Icons.Default.Delete, null, Modifier.size(18.dp)) },
-                )
-                VerticalDivider(Modifier.padding(vertical = 8.dp).size(width = 1.dp, height = 28.dp))
-                colors.forEach { c -> Swatch(c, selected = c == color && tool != Tool.ERASER, size = 30) { onColor(c) } }
+                colors.forEach { c -> Swatch(c, selected = c == color, size = 30) { onColor(c) } }
                 IconButton(onClick = onPick) { Icon(Icons.Default.Palette, "Elegir color") }
             }
-            if (tool != Tool.ERASER) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    // Vista previa: un trazo con el color, grosor y opacidad elegidos
-                    Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-                        val previewSize = (4 + 32 * (width - MIN_WIDTH) / (MAX_WIDTH - MIN_WIDTH)).dp
-                        Box(
-                            Modifier
-                                .size(previewSize)
-                                .background(ComposeColor(color).copy(alpha = opacity), CircleShape)
-                        )
-                    }
-                    LabeledSlider(
-                        label = "Tamaño",
-                        valueText = "${((width - MIN_WIDTH) / (MAX_WIDTH - MIN_WIDTH) * 100).roundToInt()}%",
-                        value = width,
-                        range = MIN_WIDTH..MAX_WIDTH,
-                        onChange = onWidth,
-                        modifier = Modifier.weight(1f),
+            if (straight != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(
+                        selected = straight,
+                        onClick = { onStraight(true) },
+                        label = { Text("Recto") },
+                        leadingIcon = { Icon(Icons.Default.HorizontalRule, null, Modifier.size(18.dp)) },
                     )
+                    FilterChip(
+                        selected = !straight,
+                        onClick = { onStraight(false) },
+                        label = { Text("Libre") },
+                        leadingIcon = { Icon(Icons.Default.Gesture, null, Modifier.size(18.dp)) },
+                    )
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                // Vista previa: un punto con el color, grosor y opacidad elegidos
+                Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                    val fraction = (width - widthRange.start) / (widthRange.endInclusive - widthRange.start)
+                    Box(
+                        Modifier
+                            .size((4 + 32 * fraction).dp)
+                            .background(ComposeColor(color).copy(alpha = opacity ?: 1f), CircleShape)
+                    )
+                }
+                LabeledSlider(
+                    label = "Tamaño",
+                    valueText = "${((width - widthRange.start) / (widthRange.endInclusive - widthRange.start) * 100).roundToInt()}%",
+                    value = width,
+                    range = widthRange,
+                    onChange = onWidth,
+                    modifier = Modifier.weight(1f),
+                )
+                if (opacity != null) {
                     LabeledSlider(
                         label = "Opacidad",
                         valueText = "${(opacity * 100).roundToInt()}%",
