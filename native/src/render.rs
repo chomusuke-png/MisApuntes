@@ -127,9 +127,15 @@ impl<'a> Renderer<'a> {
         let mut out = String::new();
         let _ = write!(
             out,
-            "<article id=\"page\" data-src=\"wc\" data-w=\"{w}\" data-ph=\"{h}\" style=\"width:{w}pt;padding:{t}pt {r}pt {b}pt {l}pt\">",
+            "<article id=\"page\" data-src=\"wc\" data-w=\"{w}\" data-ph=\"{h}\" data-hd=\"{hd}\" data-fd=\"{fd}\" data-pn=\"{pn}\" data-pf=\"{pf}\" data-tp=\"{tp}\" data-eo=\"{eo}\" style=\"width:{w}pt;padding:{t}pt {r}pt {b}pt {l}pt\">",
             w = num(s.page_w),
             h = num(s.page_h),
+            hd = num(s.header),
+            fd = num(s.footer),
+            pn = s.page_num_start.unwrap_or(1),
+            pf = page_format(s.page_num_format),
+            tp = u8::from(s.title_page),
+            eo = u8::from(self.doc.settings.even_odd_headers),
             t = num(s.margin_top),
             r = num(s.margin_right),
             b = num(s.margin_bottom),
@@ -146,8 +152,35 @@ impl<'a> Renderer<'a> {
             out.push_str(&notes);
             out.push_str("</div>");
         }
+        self.headers_footers(&mut out);
         out.push_str("</article>");
         out
+    }
+
+    /// Encabezado y pie de la última sección (los que muestra el editor), ocultos dentro de la
+    /// hoja: el editor los copia en cada página y cambia los números de página.
+    /// data-hf: h/f + d (todas las páginas, o las impares), 1 (primera página, si es distinta)
+    /// o e (páginas pares, si son distintas).
+    fn headers_footers(&mut self, out: &mut String) {
+        let s = self.doc.last_section.clone();
+        let even_odd = self.doc.settings.even_odd_headers;
+        for (kind, set) in [("h", s.headers), ("f", s.footers)] {
+            let first = if s.title_page { Some(set.first) } else { None };
+            let even = if even_odd { Some(set.even) } else { None };
+            for (variant, id) in [("d", Some(set.default)), ("1", first), ("e", even)] {
+                let Some(id) = id else { continue };
+                let part = id.and_then(|i| self.doc.parts.get(&i)).map(|p| p.blocks.clone());
+                // Primera página distinta sin contenido propio: va en blanco
+                if part.is_none() && variant == "d" {
+                    continue;
+                }
+                let _ = write!(out, "<div class=\"whf\" data-x=\"1\" data-hf=\"{kind}{variant}\" contenteditable=\"false\" hidden>");
+                if let Some(blocks) = part {
+                    self.blocks(&blocks, &format!("hf{kind}{variant}"), out);
+                }
+                out.push_str("</div>");
+            }
+        }
     }
 
     fn blocks(&mut self, blocks: &Blocks, prefix: &str, out: &mut String) {
@@ -289,6 +322,11 @@ impl<'a> Renderer<'a> {
                         self.notes.push_str(&note);
                     }
                 }
+            }
+            // Número de página y total: el editor pone el de cada hoja
+            InlineObject::Field { instr, result, .. } if page_field(instr).is_some() => {
+                let f = page_field(instr).unwrap_or("PAGE");
+                let _ = write!(out, "<span class=\"wo wpg\" data-f=\"{f}\" data-o=\"{oref}\" contenteditable=\"false\">{}</span>", esc(result));
             }
             InlineObject::Field { result, .. } => {
                 let _ = write!(out, "<span class=\"wo\" data-o=\"{oref}\" contenteditable=\"false\">{}</span>", esc(result));
@@ -444,6 +482,15 @@ impl<'a> Renderer<'a> {
         });
         self.written.insert(key.to_string(), result.clone());
         result
+    }
+}
+
+/// Campo de número de página (PAGE) o de total de páginas (NUMPAGES / SECTIONPAGES).
+fn page_field(instr: &str) -> Option<&'static str> {
+    match instr.split_whitespace().next()?.to_ascii_uppercase().as_str() {
+        "PAGE" => Some("PAGE"),
+        "NUMPAGES" | "SECTIONPAGES" => Some("NUMPAGES"),
+        _ => None,
     }
 }
 
@@ -644,5 +691,17 @@ pub fn num(v: f32) -> String {
     } else {
         let s = format!("{v:.2}");
         s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// Numeración de páginas como la entiende el editor: "1", "i", "I", "a" o "A".
+fn page_format(f: wordcraft_doc::section::NumFormat) -> &'static str {
+    use wordcraft_doc::section::NumFormat;
+    match f {
+        NumFormat::LowerRoman => "i",
+        NumFormat::UpperRoman => "I",
+        NumFormat::LowerLetter => "a",
+        NumFormat::UpperLetter => "A",
+        _ => "1",
     }
 }

@@ -209,3 +209,93 @@ fn grid_table_with_merges_shading_and_alignment() {
     let b = t.props.borders.as_ref().unwrap();
     assert!(b.top.as_ref().is_none_or(|s| s.width == 0.0 || s.style == wordcraft_doc::props::BorderStyle::None));
 }
+
+#[test]
+fn rich_header_and_footer_from_editor() {
+    use wordcraft_doc::Block;
+    use wordcraft_doc::para::InlineObject;
+    let dir = tmp("hf");
+    // Encabezado con texto y una tabla; pie con "Página N de M"
+    let model = r##"{"blocks":[{"p":{"tag":"p","segs":[{"t":"Cuerpo"}]}}],
+        "hf":{"hd":{"blocks":[
+            {"p":{"tag":"p","align":"center","segs":[{"t":"Colegio","f":{"b":true}}]}},
+            {"t":{"src":null,"rows":[{"tr":null,"cells":[
+                {"s":1,"m":0,"blocks":[{"p":{"tag":"p","segs":[{"t":"Historia"}]}}]},
+                {"s":1,"m":0,"blocks":[{"p":{"tag":"p","segs":[{"t":"2026"}]}}]}]}]}}]},
+              "fd":{"blocks":[{"p":{"tag":"p","align":"right","segs":[{"t":"Página "},{"fld":"PAGE"},{"t":" de "},{"fld":"NUMPAGES"}]}}]}}}"##;
+    let out = dir.join("out.docx");
+    wordbridge::to_docx("", "docx", model, dir.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+    let doc = wordbridge::open(out.to_str().unwrap(), "docx").unwrap();
+    let s = &doc.last_section;
+    let h = &doc.parts[&s.headers.default.expect("encabezado")];
+    assert_eq!(h.blocks[0].as_para().unwrap().plain_text(), "Colegio");
+    assert!(matches!(&*h.blocks[1], Block::Table(_)), "la tabla del encabezado");
+    let f = &doc.parts[&s.footers.default.expect("pie")];
+    let p = f.blocks[0].as_para().unwrap();
+    let fields: Vec<String> = p.objects.iter().filter_map(|o| if let InlineObject::Field { instr, .. } = o { Some(instr.trim().to_string()) } else { None }).collect();
+    assert_eq!(fields, ["PAGE", "NUMPAGES"]);
+
+    // El editor lo muestra oculto en la hoja, con rutas propias y los campos marcados
+    let html = wordbridge::to_html(out.to_str().unwrap(), "docx", dir.to_str().unwrap()).unwrap();
+    assert!(html.contains("data-hf=\"hd\""));
+    assert!(html.contains("data-b=\"hfhd.0\""));
+    assert!(html.contains("data-f=\"NUMPAGES\""));
+
+    // Sin tocar el primer párrafo (se copia) y con uno nuevo; el pie se quita
+    let model2 = r##"{"blocks":[{"k":"0"}],"hf":{
+        "hd":{"blocks":[{"k":"hfhd.0"},{"p":{"tag":"p","segs":[{"t":"Unidad 2"}]}}]},
+        "fd":{"blocks":[{"p":{"tag":"p","segs":[]}}]}}}"##;
+    let out2 = dir.join("out2.docx");
+    wordbridge::to_docx(out.to_str().unwrap(), "docx", model2, dir.to_str().unwrap(), out2.to_str().unwrap()).unwrap();
+    let doc2 = wordbridge::open(out2.to_str().unwrap(), "docx").unwrap();
+    let h2 = &doc2.parts[&doc2.last_section.headers.default.unwrap()];
+    let texts: Vec<String> = h2.blocks.iter().filter_map(|b| b.as_para().map(|p| p.plain_text())).collect();
+    assert_eq!(texts, ["Colegio", "Unidad 2"]);
+    assert_eq!(h2.blocks[0].as_para().unwrap().run_ranges().next().unwrap().1.bold, Some(true));
+    assert!(doc2.last_section.footers.default.is_none());
+}
+
+#[test]
+fn first_page_and_even_headers_from_editor() {
+    let dir = tmp("hfo");
+    let p = |t: &str| format!(r#"{{"blocks":[{{"p":{{"tag":"p","segs":[{{"t":"{t}"}}]}}}}]}}"#);
+    let model = format!(
+        r#"{{"blocks":[{{"p":{{"tag":"p","segs":[{{"t":"Cuerpo"}}]}}}}],"hfo":{{"tp":true,"eo":true}},"hf":{{"hd":{},"h1":{},"he":{}}}}}"#,
+        p("Impar"),
+        p("Portada"),
+        p("Par")
+    );
+    let out = dir.join("out.docx");
+    wordbridge::to_docx("", "docx", &model, dir.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+    let doc = wordbridge::open(out.to_str().unwrap(), "docx").unwrap();
+    let s = &doc.last_section;
+    assert!(s.title_page);
+    assert!(doc.settings.even_odd_headers);
+    let text = |id: Option<u32>| doc.parts[&id.unwrap()].blocks[0].as_para().unwrap().plain_text();
+    assert_eq!(text(s.headers.default), "Impar");
+    assert_eq!(text(s.headers.first), "Portada");
+    assert_eq!(text(s.headers.even), "Par");
+    let html = wordbridge::to_html(out.to_str().unwrap(), "docx", dir.to_str().unwrap()).unwrap();
+    assert!(html.contains("data-tp=\"1\"") && html.contains("data-eo=\"1\""));
+    assert!(html.contains("data-hf=\"he\"") && html.contains("data-hf=\"h1\""));
+    // Los pies no tienen nada propio: primera y pares quedan en blanco
+    assert!(html.contains("data-hf=\"f1\"") && html.contains("data-hf=\"fe\""));
+}
+
+#[test]
+fn page_numbering_and_header_distance_from_editor() {
+    use wordcraft_doc::section::NumFormat;
+    let dir = tmp("pnum");
+    let model = r##"{"blocks":[{"p":{"tag":"p","segs":[{"t":"Cuerpo"}]}}],
+        "hfo":{"tp":false,"eo":false,"fmt":"i","start":3,"hd":50,"fd":20},
+        "hf":{"fd":{"blocks":[{"p":{"tag":"p","align":"center","segs":[{"fld":"PAGE"}]}}]}}}"##;
+    let out = dir.join("out.docx");
+    wordbridge::to_docx("", "docx", model, dir.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+    let doc = wordbridge::open(out.to_str().unwrap(), "docx").unwrap();
+    let s = &doc.last_section;
+    assert_eq!(s.page_num_format, NumFormat::LowerRoman);
+    assert_eq!(s.page_num_start, Some(3));
+    assert!((s.header - 50.0).abs() < 0.5 && (s.footer - 20.0).abs() < 0.5);
+    let html = wordbridge::to_html(out.to_str().unwrap(), "docx", dir.to_str().unwrap()).unwrap();
+    assert!(html.contains("data-pn=\"3\" data-pf=\"i\""));
+}

@@ -23,6 +23,34 @@ pub struct Model {
     pub blocks: Vec<MBlock>,
     /// Tamaño y márgenes de la hoja elegidos en el editor (puntos).
     pub page: Option<MPage>,
+    /// Encabezados y pies cambiados en el editor (solo los que se tocaron), por su lugar:
+    /// "hd"/"fd" todas las páginas (o las impares), "h1"/"f1" la primera, "he"/"fe" las pares.
+    #[serde(default)]
+    pub hf: Option<HashMap<String, MStory>>,
+    /// Primera página diferente (tp) y pares e impares diferentes (eo), si se cambiaron.
+    pub hfo: Option<MHfOptions>,
+}
+
+#[derive(Deserialize)]
+pub struct MHfOptions {
+    #[serde(default)]
+    pub tp: bool,
+    #[serde(default)]
+    pub eo: bool,
+    /// Numeración de páginas: "1", "i", "I", "a" o "A".
+    pub fmt: Option<String>,
+    /// Número de la primera página.
+    pub start: Option<u32>,
+    /// Distancia del encabezado y del pie al borde de la hoja, en puntos.
+    pub hd: Option<f32>,
+    pub fd: Option<f32>,
+}
+
+/// Encabezado o pie: bloques como los del cuerpo (las rutas son las de ese encabezado).
+#[derive(Deserialize)]
+pub struct MStory {
+    #[serde(default)]
+    pub blocks: Vec<MBlock>,
 }
 
 #[derive(Deserialize)]
@@ -92,6 +120,8 @@ pub struct Seg {
     pub br: bool,
     /// 1 = salto de página, 2 = salto de columna.
     pub pb: Option<u8>,
+    /// Campo nuevo: "PAGE" (número de página) o "NUMPAGES" (total).
+    pub fld: Option<String>,
 }
 
 /// Aspecto que muestra el editor; `None` = lo que diga el estilo del párrafo.
@@ -185,7 +215,78 @@ pub fn rebuild(orig: &Document, model: &Model, media_dir: &Path) -> Document {
     if let Some(p) = &model.page {
         apply_page(&mut doc, p);
     }
+    if let Some(o) = &model.hfo {
+        doc.last_section.title_page = o.tp;
+        doc.settings.even_odd_headers = o.eo;
+        apply_numbering(&mut doc.last_section, o);
+    }
+    if let Some(hf) = &model.hf {
+        apply_headers(&mut doc, orig, media_dir, hf);
+    }
     doc
+}
+
+fn page_field(instr: &str) -> InlineObject {
+    InlineObject::Field { instr: instr.into(), result: "1".into(), locked: false, dirty: false, code: false, form: String::new() }
+}
+
+/// Encabezados y pies escritos en el editor. Cada uno se rehace como el cuerpo, con su propio
+/// original (el encabezado de ese lugar), así lo no tocado se copia tal cual.
+fn apply_headers(doc: &mut Document, orig: &Document, media_dir: &Path, hf: &HashMap<String, MStory>) {
+    use wordcraft_doc::PartKind;
+    let mut ids: Vec<&String> = hf.keys().collect();
+    ids.sort();
+    for id in ids {
+        let story = &hf[id];
+        let mut chars = id.chars();
+        let (kind, variant) = match (chars.next(), chars.next()) {
+            (Some('h'), Some(v)) => (PartKind::Header, v),
+            (Some('f'), Some(v)) => (PartKind::Footer, v),
+            _ => continue,
+        };
+        let slot = |d: &Document| {
+            let set = if kind == PartKind::Header { d.last_section.headers } else { d.last_section.footers };
+            match variant {
+                'd' => Some(set.default),
+                '1' => Some(set.first),
+                'e' => Some(set.even),
+                _ => None,
+            }
+        };
+        let Some(current) = slot(doc) else { continue };
+        let source = slot(orig).flatten().and_then(|i| orig.parts.get(&i)).map(|p| p.blocks.clone()).unwrap_or_default();
+        let mut hdoc = orig.clone();
+        hdoc.body = source;
+        let mut remaining = HashMap::new();
+        count_sources(&story.blocks, &mut remaining);
+        let mut ctx = Ctx { orig: &hdoc, media_dir, lists: HashMap::new(), remaining };
+        let mut blocks = build_blocks(&mut ctx, doc, &story.blocks);
+        repair_markers(&mut blocks);
+        let empty = blocks.iter().all(|b| b.as_para().is_some_and(|p| p.objects.is_empty() && p.plain_text().trim().is_empty()));
+        // Sin nada escrito: el de todas las páginas se quita; el de la primera queda en blanco
+        let id = if empty && variant == 'd' {
+            None
+        } else {
+            if blocks.is_empty() {
+                blocks.push(Arc::new(Block::Para(Paragraph::new())));
+            }
+            match current.filter(|i| doc.parts.contains_key(i)) {
+                Some(i) => {
+                    if let Some(part) = doc.parts.get_mut(&i) {
+                        part.blocks = blocks;
+                    }
+                    Some(i)
+                }
+                None => Some(doc.add_part(kind, blocks)),
+            }
+        };
+        let set = if kind == PartKind::Header { &mut doc.last_section.headers } else { &mut doc.last_section.footers };
+        match variant {
+            'd' => set.default = id,
+            'e' => set.even = id,
+            _ => set.first = id,
+        }
+    }
 }
 
 /// Hoja elegida en el editor. Se aplica a la sección final (la que muestra el editor).
@@ -544,6 +645,11 @@ fn build_para(ctx: &mut Ctx, doc: &mut Document, mp: &MPara) -> Paragraph {
             let _ = p.insert_text(end, "\n", &last_props);
         } else if let Some(kind) = seg.pb {
             let _ = p.insert_text(end, if kind == 2 { "\u{000E}" } else { "\u{000C}" }, &last_props);
+        } else if let Some(f) = seg.fld.as_deref() {
+            let instr = if f == "NUMPAGES" { "NUMPAGES" } else { "PAGE" };
+            let props = run_props(ctx, doc, &style, seg);
+            let _ = p.insert_object(end, page_field(instr), &props);
+            last_props = props;
         }
     }
     p.normalize();
@@ -688,6 +794,8 @@ fn parse_align(a: &str) -> Option<Align> {
 
 /// "5" → bloque 5 del cuerpo; "5.0.1.2" → bloque 2 de la celda (fila 0, columna 1) de la tabla 5.
 fn find_block(body: &Blocks, path: &str) -> Option<Arc<Block>> {
+    // En un encabezado o pie las rutas llevan delante su lugar ("hfhd.0"): se busca en ese texto
+    let path = if path.starts_with("hf") { path.split_once('.').map_or(path, |(_, p)| p) } else { path };
     let nums: Vec<usize> = path.split('.').map(|n| n.parse().ok()).collect::<Option<_>>()?;
     let (first, rest) = nums.split_first()?;
     let mut block = body.get(*first)?.clone();
@@ -846,5 +954,30 @@ fn walk_mut(blocks: &mut Blocks, f: &mut dyn FnMut(&mut Paragraph)) {
                 }
             }
         }
+    }
+}
+
+/// Numeración de páginas y distancias de encabezado y pie elegidas en el editor.
+fn apply_numbering(s: &mut wordcraft_doc::SectionProps, o: &MHfOptions) {
+    use wordcraft_doc::section::NumFormat;
+    if let Some(f) = o.fmt.as_deref() {
+        s.page_num_format = match f {
+            "i" => NumFormat::LowerRoman,
+            "I" => NumFormat::UpperRoman,
+            "a" => NumFormat::LowerLetter,
+            "A" => NumFormat::UpperLetter,
+            _ => NumFormat::Decimal,
+        };
+    }
+    if let Some(n) = o.start {
+        // Empezar en 1 es lo normal: no hace falta escribirlo
+        s.page_num_start = (n != 1).then_some(n.clamp(0, 9999));
+    }
+    let ok = |v: f32| v.is_finite() && v >= 0.0;
+    if let Some(v) = o.hd.filter(|v| ok(*v)) {
+        s.header = v.min(300.0);
+    }
+    if let Some(v) = o.fd.filter(|v| ok(*v)) {
+        s.footer = v.min(300.0);
     }
 }
