@@ -122,8 +122,8 @@ interface StickyNoteDao {
     @Query("UPDATE sticky_notes SET title = :title, updatedAt = :at WHERE id = :id")
     suspend fun rename(id: Long, title: String, at: Long = System.currentTimeMillis())
 
-    @Query("UPDATE sticky_notes SET icon = :icon, color = :color WHERE id = :id")
-    suspend fun setLook(id: Long, icon: String, color: Int)
+    @Query("UPDATE sticky_notes SET icon = :icon, color = :color, size = :size WHERE id = :id")
+    suspend fun setLook(id: Long, icon: String, color: Int, size: Int)
 
     @Query("UPDATE sticky_notes SET page = :page, x = :x, y = :y, block = :block, docY = :docY WHERE id = :id")
     suspend fun move(id: Long, page: Int, x: Float, y: Float, block: String?, docY: Float)

@@ -292,9 +292,9 @@ class PdfViewModel(app: Application, savedState: SavedStateHandle) : AndroidView
 
     // ---------- Notas adhesivas ----------
 
-    fun createStickyNote(page: Int, x: Float, y: Float, icon: String, color: Int) = viewModelScope.launch {
+    fun createStickyNote(page: Int, x: Float, y: Float, icon: String, color: Int, size: Int) = viewModelScope.launch {
         val id = repo.createStickyNote(
-            StickyNoteEntity(docId = docId, icon = icon, color = color, page = page, x = x, y = y, docY = y)
+            StickyNoteEntity(docId = docId, icon = icon, color = color, page = page, x = x, y = y, docY = y, size = size)
         )
         repo.rememberColor(ColorKind.NOTE, color)
         stickyCreated.emit(id)
@@ -611,9 +611,9 @@ fun PdfViewerScreen(
             initialColor = recentNoteColors.firstOrNull() ?: NOTE_COLORS.first(),
             recentColors = recentNoteColors,
             onDismiss = { pendingPlace = null },
-        ) { icon, noteColor ->
+        ) { icon, noteColor, size ->
             pendingPlace = null
-            vm.createStickyNote(page, x, y, icon, noteColor)
+            vm.createStickyNote(page, x, y, icon, noteColor, size)
         }
     }
 
@@ -755,7 +755,7 @@ private fun PageNoteMarker(
     onTap: (StickyNoteEntity) -> Unit,
     onMoved: (StickyNoteEntity, Float, Float) -> Unit,
 ) {
-    val sizeDp = 30.dp
+    val sizeDp = note.size.coerceIn(16, 72).dp
     val half = with(LocalDensity.current) { sizeDp.toPx() / 2 }
     var drag by remember(note.x, note.y) { mutableStateOf(Offset.Zero) }
     var dragging by remember { mutableStateOf(false) }

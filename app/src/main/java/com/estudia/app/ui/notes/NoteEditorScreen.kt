@@ -144,8 +144,8 @@ class NoteEditorViewModel(app: Application, savedState: SavedStateHandle) : Andr
         }
     }
 
-    fun setLook(icon: String, color: Int) = viewModelScope.launch {
-        repo.stickyNotes.setLook(noteId, icon, color)
+    fun setLook(icon: String, color: Int, size: Int) = viewModelScope.launch {
+        repo.stickyNotes.setLook(noteId, icon, color, size)
         repo.rememberColor(ColorKind.NOTE, color)
     }
 
@@ -340,15 +340,16 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
 
     if (lookDialog) note?.let { n ->
         NoteLookDialog(
-            title = "Ícono y color",
+            title = "Ícono, color y tamaño",
             confirmLabel = "Guardar",
             initialIcon = n.icon,
             initialColor = n.color,
+            initialSize = n.size,
             recentColors = recentNoteColors,
             onDismiss = { lookDialog = false },
-        ) { icon, color ->
+        ) { icon, color, size ->
             lookDialog = false
-            vm.setLook(icon, color)
+            vm.setLook(icon, color, size)
         }
     }
 

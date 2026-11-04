@@ -292,7 +292,7 @@ fun EditorScreen(
                 id = n.id.toString(),
                 img = if (noteTint(n.color) == Color.Black) uris.second else uris.first,
                 color = cssColor(n.color),
-                x = n.x, y = n.y, block = n.block, docY = n.docY,
+                x = n.x, y = n.y, block = n.block, docY = n.docY, size = n.size,
             )
         }
         editor.callRaw("notes.set(${Json.encodeToString(ListSerializer(WebNote.serializer()), list)})")
@@ -582,10 +582,10 @@ fun EditorScreen(
             initialColor = recentNoteColors.firstOrNull() ?: NOTE_COLORS.first(),
             recentColors = recentNoteColors,
             onDismiss = { pendingAnchor = null },
-        ) { icon, noteColor ->
+        ) { icon, noteColor, size ->
             pendingAnchor = null
             // El párrafo recibió su data-anchor: se guarda antes de abrir la nota
-            editor.flush { vm.createStickyNote(anchor, icon, noteColor) }
+            editor.flush { vm.createStickyNote(anchor, icon, noteColor, size) }
         }
     }
 

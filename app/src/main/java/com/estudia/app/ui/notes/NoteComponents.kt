@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -98,6 +99,9 @@ import com.estudia.app.ui.components.Swatch
 import java.io.ByteArrayOutputStream
 
 /** Íconos disponibles para las notas (clave guardada en la base de datos → ícono). */
+/** Tamaños del pin de una nota (dp) y su nombre. */
+val PIN_SIZES = listOf(22 to "Pequeño", 30 to "Mediano", 40 to "Grande", 52 to "Muy grande")
+
 val NOTE_ICONS: List<Pair<String, ImageVector>> = listOf(
     "note" to Icons.AutoMirrored.Filled.StickyNote2,
     "star" to Icons.Default.Star,
@@ -173,11 +177,13 @@ fun NoteLookDialog(
     initialIcon: String,
     initialColor: Int,
     recentColors: List<Int>,
+    initialSize: Int = PIN_SIZES[1].first,
     onDismiss: () -> Unit,
-    onConfirm: (icon: String, color: Int) -> Unit,
+    onConfirm: (icon: String, color: Int, size: Int) -> Unit,
 ) {
     var icon by remember { mutableStateOf(initialIcon) }
     var color by remember { mutableIntStateOf(initialColor) }
+    var size by remember { mutableIntStateOf(initialSize) }
     var picker by remember { mutableStateOf(false) }
 
     AlertDialog(
@@ -222,9 +228,28 @@ fun NoteLookDialog(
                         Icon(Icons.Default.Palette, "Otro color")
                     }
                 }
+                Text("Tamaño del pin", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
+                    PIN_SIZES.forEach { (dp, label) ->
+                        val selected = dp == size
+                        Column(
+                            Modifier
+                                .background(
+                                    if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                                    RoundedCornerShape(10.dp),
+                                )
+                                .clickable { size = dp }
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            NoteBadge(icon, color, dp.dp)
+                            Text(label, fontSize = 11.sp, maxLines = 1)
+                        }
+                    }
+                }
             }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(icon, color) }) { Text(confirmLabel) } },
+        confirmButton = { TextButton(onClick = { onConfirm(icon, color, size) }) { Text(confirmLabel) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
 

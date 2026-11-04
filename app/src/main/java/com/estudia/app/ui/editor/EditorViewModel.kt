@@ -91,7 +91,7 @@ data class WebAnchor(val x: Float, val y: Float, val block: String? = null, val 
 
 /** Nota tal como la dibuja el editor web. */
 @Serializable
-data class WebNote(val id: String, val img: String, val color: String, val x: Float, val y: Float, val block: String?, val docY: Float)
+data class WebNote(val id: String, val img: String, val color: String, val x: Float, val y: Float, val block: String?, val docY: Float, val size: Int = 30)
 
 class EditorViewModel(app: Application, savedState: SavedStateHandle) : AndroidViewModel(app) {
     private val repo = (app as EstudiaApp).repository
@@ -198,10 +198,10 @@ class EditorViewModel(app: Application, savedState: SavedStateHandle) : AndroidV
 
     fun onScroll(y: Int) { scrollY = y }
 
-    fun createStickyNote(anchorJson: String, icon: String, color: Int) = viewModelScope.launch {
+    fun createStickyNote(anchorJson: String, icon: String, color: Int, size: Int) = viewModelScope.launch {
         val a = parseAnchor(anchorJson) ?: return@launch
         val id = repo.createStickyNote(
-            StickyNoteEntity(docId = docId, icon = icon, color = color, x = a.x, y = a.y, block = a.block, docY = a.docY)
+            StickyNoteEntity(docId = docId, icon = icon, color = color, x = a.x, y = a.y, block = a.block, docY = a.docY, size = size)
         )
         repo.rememberColor(ColorKind.NOTE, color)
         stickyCreated.emit(id)

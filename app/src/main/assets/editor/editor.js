@@ -1819,6 +1819,10 @@
       if (m.classList.contains('dragging')) return;
       m.style.background = n.color;
       m.firstChild.src = n.img;
+      // Tamaño propio de cada pin (el ícono, un 60 %)
+      const sz = Math.max(16, Math.min(72, n.size || 30));
+      m.style.width = m.style.height = sz + 'px';
+      m.firstChild.style.width = m.firstChild.style.height = Math.round(sz * 0.6) + 'px';
       m.style.transform = 'translate(-50%, -50%) scale(' + (1 / s) + ')';
       const pos = notePosition(n);
       m.style.left = pos[0] + 'px';

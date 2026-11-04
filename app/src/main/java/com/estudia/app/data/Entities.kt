@@ -83,6 +83,8 @@ data class StickyNoteEntity(
     val y: Float,
     val block: String? = null,
     val docY: Float = 0f,
+    /** Tamaño del pin, en dp. */
+    val size: Int = 30,
     /** Texto sin formato del cuerpo, para buscar en el índice. */
     val plainText: String = "",
     val createdAt: Long = System.currentTimeMillis(),
