@@ -24,6 +24,11 @@ import androidx.compose.material.icons.automirrored.filled.RotateRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.BorderOuter
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.ScreenRotation
+import kotlin.math.abs
 import androidx.compose.material3.Slider
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.material.icons.filled.Close
@@ -180,6 +185,16 @@ import android.graphics.Color as AndroidColor
 import kotlin.math.roundToInt
 import android.graphics.Typeface as AndroidTypeface
 
+/**
+ * Hojas de la vista de página, en unidades de desplazamiento del editor: cuántas hay, cada cuánto
+ * empieza una, dónde empieza la primera y el alto visible. count = 0 en vista móvil.
+ */
+internal data class PageGeometry(val count: Int = 0, val step: Float = 0f, val top: Float = 0f, val viewport: Float = 0f) {
+    /** Hoja (desde 1) que queda en el centro de la pantalla con el desplazamiento [scrollY]. */
+    fun pageAt(scrollY: Float): Int =
+        if (count <= 0 || step <= 0f) 0 else (((scrollY + viewport / 2 - top) / step).toInt() + 1).coerceIn(1, count)
+}
+
 private const val DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 /** Familias disponibles en todos los Android (nombre CSS → etiqueta). */
@@ -257,6 +272,7 @@ fun EditorScreen(
     var openNoteId by rememberSaveable { mutableStateOf<Long?>(null) }
     var indexOpen by remember { mutableStateOf(false) }
     var docScroll by remember { mutableStateOf(0 to 0) }
+    var pages by remember { mutableStateOf(PageGeometry()) }
     LaunchedEffect(Unit) { vm.stickyCreated.collect(onOpenStickyNote) }
     LaunchedEffect(notes, webReady) {
         if (webReady == 0) return@LaunchedEffect
@@ -444,6 +460,7 @@ fun EditorScreen(
                         gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     },
                     onFind = { finding = true },
+                    onLayoutChange = { pageView = true },
                     onStats = { editor.eval("docStats()") { stats = it } },
                 )
                 format.hasSelection -> HighlightBar(
@@ -503,6 +520,7 @@ fun EditorScreen(
                                     onModel = vm::saveModel,
                                     onFound = { cur, total -> found = cur to total },
                                     onRotateImage = vm::rotateImage,
+                                    onPages = { pages = it },
                                 ),
                                 initialScroll = vm.scrollY,
                                 onLoaded = { webReady++ },
@@ -517,7 +535,11 @@ fun EditorScreen(
                 FastScrollbar(
                     fraction = scrollY.toFloat() / scrollMax,
                     onScrollTo = { editor.call("editor.scrollToFraction", it) },
-                    label = { "${(it * 100).roundToInt()} %" },
+                    // En vista de página, la hoja; en vista móvil (sin hojas), el porcentaje
+                    label = { f ->
+                        val n = pages.pageAt(f * scrollMax)
+                        if (n > 0) "Página $n de ${pages.count}" else "${(f * 100).roundToInt()} %"
+                    },
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(top = 8.dp, bottom = 88.dp),
@@ -637,6 +659,7 @@ internal class EditorBridge(
     private val onModel: (String) -> Unit = {},
     private val onFound: (Int, Int) -> Unit = { _, _ -> },
     private val onRotateImage: (String, Int) -> String = { _, _ -> "" },
+    private val onPages: (PageGeometry) -> Unit = {},
 ) {
     private val main = Handler(Looper.getMainLooper())
 
@@ -647,6 +670,9 @@ internal class EditorBridge(
     @JavascriptInterface fun found(current: Int, total: Int) { main.post { onFound(current, total) } }
     /** Gira una imagen del documento; devuelve el archivo nuevo ("" si no se pudo). */
     @JavascriptInterface fun rotateImage(src: String, degrees: Int): String = onRotateImage(src, degrees)
+    @JavascriptInterface fun pages(count: Int, step: Double, top: Double, viewport: Double) {
+        main.post { onPages(PageGeometry(count, step.toFloat(), top.toFloat(), viewport.toFloat())) }
+    }
     @JavascriptInterface fun onState(json: String) = onState.invoke(json)
     @JavascriptInterface fun openNote(id: String) { id.toLongOrNull()?.let { main.post { onNoteTap(it) } } }
     @JavascriptInterface fun placeNote(anchor: String) { main.post { onNotePlaced(anchor) } }
@@ -679,6 +705,8 @@ internal fun createEditorWebView(
         layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         setBackgroundColor(AndroidColor.TRANSPARENT)
         settings.javaScriptEnabled = true
+        // La barra de desplazamiento rápido (FastScrollbar) reemplaza a la del WebView
+        isVerticalScrollBarEnabled = false
         // Solo para mostrar las imágenes del documento, guardadas junto al HTML
         settings.allowFileAccess = true
         settings.builtInZoomControls = true
@@ -714,6 +742,8 @@ internal fun FormattingToolbar(
     onFind: (() -> Unit)? = null,
     onStats: (() -> Unit)? = null,
     onReplaceImage: (() -> Unit)? = null,
+    /** Se cambió la hoja: la pantalla pasa a vista de página para que se vea. */
+    onLayoutChange: (() -> Unit)? = null,
 ) {
     // Cinta como la de Word: pestañas arriba y sus herramientas debajo
     var tab by rememberSaveable { mutableStateOf(RibbonTab.HOME) }
@@ -721,6 +751,7 @@ internal fun FormattingToolbar(
     val tabs = RibbonTab.entries.filter {
         when (it) {
             RibbonTab.REVIEW -> onFind != null || onStats != null
+            RibbonTab.LAYOUT -> onLayoutChange != null
             RibbonTab.IMAGE -> image != null
             else -> true
         }
@@ -753,6 +784,10 @@ internal fun FormattingToolbar(
                     RibbonTab.INSERT -> InsertTools(editor, onInsertImage)
                     RibbonTab.PARAGRAPH -> ParagraphTools(format, editor)
                     RibbonTab.IMAGE -> if (image != null) ImageTools(image, editor, onReplaceImage)
+                    RibbonTab.LAYOUT -> LayoutTools(format.page) { p ->
+                        editor.call("editor.setPage", p.w, p.h, p.mt, p.mr, p.mb, p.ml)
+                        onLayoutChange?.invoke()
+                    }
                     RibbonTab.REVIEW -> {
                         onFind?.let { RibbonButton(Icons.Default.FindReplace, "Buscar y reemplazar", it) }
                         onStats?.let { RibbonButton(Icons.Default.Numbers, "Contar palabras", it) }
@@ -767,8 +802,85 @@ private enum class RibbonTab(val label: String) {
     HOME("Inicio"),
     INSERT("Insertar"),
     PARAGRAPH("Párrafo"),
+    LAYOUT("Diseño"),
     REVIEW("Revisar"),
     IMAGE("Imagen"),
+}
+
+private class PaperSize(val label: String, val detail: String, val w: Float, val h: Float)
+
+/** Tamaños de hoja (en vertical, puntos). */
+private val PAPERS = listOf(
+    PaperSize("Carta", "21,6 × 27,9 cm", 612f, 792f),
+    PaperSize("Oficio", "21,6 × 33 cm", 612f, 936f),
+    PaperSize("A4", "21 × 29,7 cm", 595.3f, 841.9f),
+    PaperSize("A5", "14,8 × 21 cm", 419.5f, 595.3f),
+)
+
+private class MarginPreset(val label: String, val detail: String, val top: Float, val side: Float)
+
+/** Márgenes de Word: arriba/abajo y a los costados (puntos). */
+private val MARGINS = listOf(
+    MarginPreset("Normal", "2,54 cm", 72f, 72f),
+    MarginPreset("Estrecho", "1,27 cm", 36f, 36f),
+    MarginPreset("Moderado", "2,54 / 1,91 cm", 72f, 54f),
+    MarginPreset("Ancho", "2,54 / 5,08 cm", 72f, 144f),
+)
+
+private fun near(a: Float, b: Float) = abs(a - b) < 2f
+
+/** Diseño: tamaño de la hoja, orientación y márgenes. */
+@Composable
+private fun LayoutTools(page: PageState, onChange: (PageState) -> Unit) {
+    val landscape = page.w > page.h
+    val shortSide = minOf(page.w, page.h)
+    val longSide = maxOf(page.w, page.h)
+    fun oriented(w: Float, h: Float) = if (landscape) page.copy(w = h, h = w) else page.copy(w = w, h = h)
+
+    ChoiceMenu(
+        Icons.Default.Description, "Tamaño",
+        PAPERS.map { paper ->
+            Choice(paper.label, paper.detail, near(paper.w, shortSide) && near(paper.h, longSide)) { onChange(oriented(paper.w, paper.h)) }
+        },
+    )
+    ChoiceMenu(
+        Icons.Default.ScreenRotation, "Orientación",
+        listOf(
+            Choice("Vertical", null, !landscape) { if (landscape) onChange(page.copy(w = page.h, h = page.w)) },
+            Choice("Horizontal", null, landscape) { if (!landscape) onChange(page.copy(w = page.h, h = page.w)) },
+        ),
+    )
+    ChoiceMenu(
+        Icons.Default.BorderOuter, "Márgenes",
+        MARGINS.map { m ->
+            val current = near(page.mt, m.top) && near(page.mb, m.top) && near(page.ml, m.side) && near(page.mr, m.side)
+            Choice(m.label, m.detail, current) { onChange(page.copy(mt = m.top, mb = m.top, ml = m.side, mr = m.side)) }
+        },
+    )
+}
+
+private class Choice(val label: String, val detail: String?, val selected: Boolean, val onClick: () -> Unit)
+
+@Composable
+private fun ChoiceMenu(icon: ImageVector, label: String, choices: List<Choice>) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        RibbonButton(icon, label) { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            choices.forEach { c ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(c.label, fontWeight = if (c.selected) FontWeight.Bold else null)
+                            c.detail?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        }
+                    },
+                    leadingIcon = { if (c.selected) Icon(Icons.Default.Check, null) else Box(Modifier.size(24.dp)) },
+                    onClick = { open = false; c.onClick() },
+                )
+            }
+        }
+    }
 }
 
 private const val MIN_IMAGE_PT = 12f

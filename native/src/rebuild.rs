@@ -21,6 +21,18 @@ use crate::render::{BlockKind, Look, block_kind, image_ext, para_style};
 #[derive(Deserialize)]
 pub struct Model {
     pub blocks: Vec<MBlock>,
+    /// Tamaño y márgenes de la hoja elegidos en el editor (puntos).
+    pub page: Option<MPage>,
+}
+
+#[derive(Deserialize)]
+pub struct MPage {
+    pub w: f32,
+    pub h: f32,
+    pub mt: Option<f32>,
+    pub mr: Option<f32>,
+    pub mb: Option<f32>,
+    pub ml: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -131,7 +143,27 @@ pub fn rebuild(orig: &Document, model: &Model, media_dir: &Path) -> Document {
     }
     doc.body = body;
     repair_markers(&mut doc.body);
+    if let Some(p) = &model.page {
+        apply_page(&mut doc, p);
+    }
     doc
+}
+
+/// Hoja elegida en el editor. Se aplica a la sección final (la que muestra el editor).
+fn apply_page(doc: &mut Document, p: &MPage) {
+    let ok = |v: f32| v.is_finite() && v > 0.0;
+    if !ok(p.w) || !ok(p.h) {
+        return;
+    }
+    let s = &mut doc.last_section;
+    s.page_w = p.w.clamp(72.0, 1584.0);
+    s.page_h = p.h.clamp(72.0, 1584.0);
+    s.landscape = s.page_w > s.page_h;
+    let margin = |v: Option<f32>, cur: f32| v.filter(|m| m.is_finite() && *m >= 0.0).map_or(cur, |m| m.min(720.0));
+    s.margin_top = margin(p.mt, s.margin_top);
+    s.margin_right = margin(p.mr, s.margin_right);
+    s.margin_bottom = margin(p.mb, s.margin_bottom);
+    s.margin_left = margin(p.ml, s.margin_left);
 }
 
 fn count_sources(blocks: &[MBlock], out: &mut HashMap<String, usize>) {

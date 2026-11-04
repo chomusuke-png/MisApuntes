@@ -16,6 +16,7 @@ fn docx_to_html_has_block_ids() {
     let dir = tmp("html");
     let html = wordbridge::to_html(&res("sample.docx"), "docx", dir.to_str().unwrap()).unwrap();
     assert!(html.starts_with("<article id=\"page\" data-src=\"wc\""));
+    assert!(html.contains("data-ph=\""));
     assert!(html.contains("data-b=\"0\""));
     assert!(html.contains("data-r=\"0#0\""));
     println!("{html}");
@@ -155,4 +156,20 @@ fn resized_original_image_keeps_new_size() {
         wordcraft_doc::InlineObject::Image { w, h, .. } => assert_eq!((*w, *h), (120.0, 60.0)),
         o => panic!("no es imagen: {o:?}"),
     }
+}
+
+#[test]
+fn page_size_and_margins_from_editor() {
+    let dir = tmp("page");
+    let out = dir.join("out.docx");
+    // A4 horizontal, márgenes estrechos
+    let model = r##"{"page":{"w":841.9,"h":595.3,"mt":36,"mr":36,"mb":36,"ml":36},"blocks":[{"p":{"tag":"p","segs":[{"t":"hoja"}]}}]}"##;
+    wordbridge::to_docx("", "", model, dir.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+    let doc = wordbridge::open(out.to_str().unwrap(), "docx").unwrap();
+    let s = &doc.last_section;
+    assert!((s.page_w - 841.9).abs() < 1.0 && (s.page_h - 595.3).abs() < 1.0, "{} x {}", s.page_w, s.page_h);
+    assert!(s.landscape);
+    assert_eq!((s.margin_top, s.margin_left), (36.0, 36.0));
+    let html = wordbridge::to_html(out.to_str().unwrap(), "docx", dir.to_str().unwrap()).unwrap();
+    assert!(html.contains("data-ph=\"595"));
 }

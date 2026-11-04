@@ -68,7 +68,7 @@
   function snapshot() {
     clearTimeout(typingTimer);
     typingTimer = null;
-    const html = page.innerHTML;
+    const html = cleanInner();
     if (hIndex >= 0 && history[hIndex].html === html) {
       history[hIndex].caret = caret();
       return;
@@ -95,6 +95,15 @@
     scheduleSave();
     queueReport();
     queueNotes();
+    queuePaginate(0);
+  }
+
+  /** HTML de la hoja sin los separadores de página (no son parte del documento). */
+  function cleanInner() {
+    if (!page.querySelector('.wgap')) return page.innerHTML;
+    const copy = page.cloneNode(true);
+    copy.querySelectorAll('.wgap').forEach(function (g) { g.remove(); });
+    return copy.innerHTML;
   }
 
   function undo() {
@@ -111,6 +120,7 @@
   function getHtml() {
     const copy = page.cloneNode(true);
     ['contenteditable', 'spellcheck', 'inputmode'].forEach(function (a) { copy.removeAttribute(a); });
+    copy.querySelectorAll('.wgap').forEach(function (g) { g.remove(); });
     copy.querySelectorAll('img.wsel').forEach(function (img) {
       img.classList.remove('wsel');
       if (!img.className) img.removeAttribute('class');
@@ -281,7 +291,7 @@
         }
         if (n.nodeType !== 1) continue;
         const tag = n.tagName;
-        if (n.classList.contains('wl')) continue;
+        if (n.classList.contains('wl') || n.dataset.x) continue;
         if (n.dataset.o) {
           // Imagen del original: puede venir con otro tamaño
           if (tag === 'IMG') push({ o: n.dataset.o, w: sizePt(n.style.width || '') || undefined, ih: sizePt(n.style.height || '') || undefined });
@@ -395,8 +405,11 @@
       if (tag === 'TABLE') {
         // Las celdas de Word traen su posición (data-c); las de tablas nuevas, la de la cuadrícula
         const cells = [];
-        Array.prototype.forEach.call(n.rows, function (tr, r) {
-          if (tr.closest('table') !== n) return;
+        let r = -1;
+        Array.prototype.forEach.call(n.rows, function (tr) {
+          // Las filas separadoras de la vista de página no son del documento
+          if (tr.closest('table') !== n || tr.classList.contains('wgap')) return;
+          r++;
           Array.prototype.forEach.call(tr.cells, function (td, c) {
             const inner = [];
             blocksOf(td, counts, inner);
@@ -431,7 +444,9 @@
     listCount = 0;
     const out = [];
     blocksOf(page, counts, out);
-    return JSON.stringify({ blocks: out });
+    const result = { blocks: out };
+    if (parseFloat(page.dataset.w || '0') > 0) result.page = pageSetup();
+    return JSON.stringify(result);
   }
 
   function sendModel() {
@@ -472,6 +487,7 @@
     scheduleSave();
     queueReport();
     queueNotes();
+    queuePaginate(50);
   }
 
   function unwrap(el) {
@@ -928,6 +944,7 @@
       sup: state('superscript'),
       sub: state('subscript'),
       painter: painter !== null,
+      page: pageSetup(),
       block: (value('formatBlock') || 'p').toLowerCase(),
       font: value('fontName'),
       size: Math.round(sizePx * 0.75 * 2) / 2,
@@ -970,6 +987,243 @@
     document.body.style.zoom = '';
   }
 
+  // ---------- Hojas (vista de página) ----------
+  // Detrás del texto se dibujan hojas del tamaño elegido. El texto sigue siendo un solo flujo:
+  // separadores invisibles (.wgap) lo empujan para que nada caiga en el espacio entre hojas ni
+  // en los márgenes. Se rehacen tras cada cambio y nunca se guardan.
+
+  const GAP_PX = 24;
+  const PX = 4 / 3;
+  const LETTER = { w: 612, h: 792, mt: 72, mr: 72, mb: 72, ml: 72 };
+  const sheetEl = document.getElementById('sheet');
+  const pagesLayer = document.createElement('div');
+  pagesLayer.id = 'pages-layer';
+  sheetEl.insertBefore(pagesLayer, sheetEl.firstChild);
+  let paginateTimer = null;
+  let pageCount = 1;
+
+  function paged() { return document.body.classList.contains('paged'); }
+
+  /** Hoja actual en puntos. Sin tamaño guardado (notas), Carta. */
+  function pageSetup() {
+    const w = parseFloat(page.dataset.w || '0');
+    if (!(w > 0)) return LETTER;
+    const s = page.style;
+    function m(v, d) { const p = sizePt(v || ''); return p === null ? d : p; }
+    return {
+      w: w,
+      h: parseFloat(page.dataset.ph || '0') || Math.round(w * 11 / 8.5),
+      mt: m(s.paddingTop, 72), mr: m(s.paddingRight, 72), mb: m(s.paddingBottom, 72), ml: m(s.paddingLeft, 72)
+    };
+  }
+
+  function applyPage(p) {
+    page.dataset.w = Math.round(p.w * 10) / 10;
+    page.dataset.ph = Math.round(p.h * 10) / 10;
+    page.style.width = p.w + 'pt';
+    page.style.padding = p.mt + 'pt ' + p.mr + 'pt ' + p.mb + 'pt ' + p.ml + 'pt';
+  }
+
+  function queuePaginate(delay) {
+    clearTimeout(paginateTimer);
+    paginateTimer = setTimeout(paginate, delay == null ? 250 : delay);
+  }
+
+  function clearGaps() {
+    page.querySelectorAll('.wgap').forEach(function (g) { g.remove(); });
+  }
+
+  function makeGap(tag) {
+    const g = document.createElement(tag);
+    g.className = 'wgap';
+    g.dataset.x = '1';
+    g.setAttribute('contenteditable', 'false');
+    return g;
+  }
+
+  function paginate() {
+    paginateTimer = null;
+    // Lo que el usuario cambió se registra antes; lo que cambia la paginación se descarta
+    if (observer) markChanges(observer.takeRecords());
+    clearGaps();
+    if (!paged()) {
+      pagesLayer.innerHTML = '';
+      sheetEl.style.removeProperty('--pages-h');
+      lastStep = 0;
+      if (observer) observer.takeRecords();
+      reportPages();
+      return;
+    }
+    if (!(parseFloat(page.dataset.w || '0') > 0)) { applyPage(LETTER); fit(); }
+    const ps = pageSetup();
+    const H = ps.h * PX, MT = ps.mt * PX, MB = ps.mb * PX, STEP = H + GAP_PX;
+    const usable = H - MT - MB;
+    // Una imagen nunca más alta que el área útil de la hoja
+    sheetEl.style.setProperty('--usable-h', usable + 'px');
+    const scale = page.offsetWidth ? page.getBoundingClientRect().width / page.offsetWidth : 1;
+    function y(v) { return (v - page.getBoundingClientRect().top) / scale; }
+    function pageAt(v) { return Math.max(0, Math.floor(v / STEP)); }
+    function bottomOf(i) { return i * STEP + H - MB; }
+    function topOf(i) { return i * STEP + MT; }
+
+    /** Separador antes de node que lleva su borde superior a target (corrige márgenes que colapsan). */
+    function pushTo(node, gap, target) {
+      gap.style.height = Math.max(0, target - y(node.getBoundingClientRect().top)) + 'px';
+      node.parentNode.insertBefore(gap, node);
+      const diff = target - y(node.getBoundingClientRect().top);
+      if (Math.abs(diff) > 0.5) gap.style.height = Math.max(0, parseFloat(gap.style.height) + diff) + 'px';
+    }
+
+    /** Separador después de un salto de página manual: lo que sigue va a la hoja siguiente. */
+    function breakAfter(node) {
+      if (node.nextSibling && node.nextSibling.classList && node.nextSibling.classList.contains('wgap')) return;
+      const r = node.getBoundingClientRect();
+      const gap = makeGap(node.tagName === 'SPAN' ? 'span' : 'div');
+      gap.style.height = Math.max(0, topOf(pageAt(y(r.top)) + 1) - y(r.bottom)) + 'px';
+      node.parentNode.insertBefore(gap, node.nextSibling);
+    }
+
+    /** Primer punto del bloque que cae fuera del área útil de su hoja (o un salto manual). */
+    function firstCrossing(block) {
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
+        acceptNode: function (n) {
+          if (n.nodeType === 1 && n.classList.contains('wgap')) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      const range = document.createRange();
+      function crosses(r) {
+        if (!r || (!r.width && !r.height)) return false;
+        const top = y(r.top), i = pageAt(top);
+        return y(r.bottom) > bottomOf(i) + 0.5 || top > bottomOf(i);
+      }
+      let n;
+      while ((n = walker.nextNode())) {
+        if (n.nodeType === 1) {
+          if (n.classList.contains('wpb') || n.matches('hr.pb')) {
+            const next = n.nextSibling;
+            if (!(next && next.classList && next.classList.contains('wgap'))) return { forced: n };
+            continue;
+          }
+          if (n.tagName === 'IMG' && crosses(n.getBoundingClientRect())) return { el: n };
+          continue;
+        }
+        const len = n.nodeValue.length;
+        if (!len) continue;
+        range.selectNodeContents(n);
+        const rects = range.getClientRects();
+        let any = false;
+        for (let k = 0; k < rects.length; k++) if (crosses(rects[k])) { any = true; break; }
+        if (!any) continue;
+        // El primer carácter que cae fuera es el primero de esa línea
+        for (let o = 0; o < len; o++) {
+          range.setStart(n, o);
+          range.setEnd(n, o + 1);
+          const rr = range.getClientRects();
+          if (rr.length && crosses(rr[rr.length - 1])) return { node: n, offset: o, top: y(rr[rr.length - 1].top) };
+        }
+      }
+      return null;
+    }
+
+    /** Corta un bloque largo entre líneas (o tras un salto manual) hasta que todo quepa. */
+    function splitLines(block) {
+      for (let guard = 0; guard < 300; guard++) {
+        const hit = firstCrossing(block);
+        if (!hit) return;
+        if (hit.forced) { breakAfter(hit.forced); continue; }
+        const gap = makeGap('span');
+        if (hit.el) {
+          const top = y(hit.el.getBoundingClientRect().top);
+          if (top <= topOf(pageAt(top)) + 1) return; // más alta que la hoja: queda así
+          pushTo(hit.el, gap, topOf(pageAt(top) + 1));
+          continue;
+        }
+        const i = pageAt(hit.top);
+        // Una línea que ya empieza arriba de la hoja y aun así no cabe: nada más que hacer
+        if (hit.top <= topOf(i) + 1) return;
+        let node = hit.node;
+        if (hit.offset > 0) node = node.splitText(hit.offset);
+        node.parentNode.insertBefore(gap, node);
+        const r = document.createRange();
+        r.setStart(node, 0);
+        r.setEnd(node, Math.min(1, node.nodeValue.length));
+        const target = topOf(i + 1);
+        gap.style.height = Math.max(0, target - hit.top) + 'px';
+        const rects = r.getClientRects();
+        if (rects.length) {
+          const diff = target - y(rects[rects.length - 1].top);
+          if (Math.abs(diff) > 0.5) gap.style.height = Math.max(0, parseFloat(gap.style.height) + diff) + 'px';
+        }
+      }
+    }
+
+    function placeTable(t) {
+      Array.prototype.slice.call(t.rows).forEach(function (row, idx) {
+        if (row.classList.contains('wgap')) return;
+        const r = row.getBoundingClientRect();
+        const top = y(r.top), bottom = y(r.bottom), i = pageAt(top);
+        const outside = top > bottomOf(i);
+        if (!outside && (bottom <= bottomOf(i) + 0.5 || bottom - top > usable)) return;
+        const target = outside ? topOf(i + 1) : topOf(i + 1);
+        if (idx === 0) { pushTo(t, makeGap('div'), target); return; }
+        const gap = makeGap('tr');
+        const td = document.createElement('td');
+        td.colSpan = 99;
+        gap.appendChild(td);
+        pushTo(row, gap, target);
+      });
+    }
+
+    function placeBlock(el) {
+      if (el.matches('hr.pb')) { breakAfter(el); return; }
+      const r = el.getBoundingClientRect();
+      if (!r.height) return;
+      const top = y(r.top), bottom = y(r.bottom), i = pageAt(top);
+      if (el.tagName === 'TABLE') { placeTable(el); return; }
+      if (top > bottomOf(i) || (bottom > bottomOf(i) + 0.5 && bottom - top <= usable && top > topOf(i) + 1)) {
+        // Cabe en una hoja: pasa entero a la siguiente
+        pushTo(el, makeGap('div'), topOf(i + 1));
+      }
+      splitLines(el);
+    }
+
+    Array.prototype.slice.call(page.children).forEach(function (el) {
+      if (!el.classList.contains('wgap')) placeBlock(el);
+    });
+
+    // Hojas detrás del texto
+    let end = MT;
+    for (let c = page.lastElementChild; c; c = c.previousElementSibling) {
+      const rr = c.getBoundingClientRect();
+      if (rr.height || rr.width) { end = y(rr.bottom); break; }
+    }
+    pageCount = Math.max(1, pageAt(Math.max(0, end - 1)) + 1);
+    const total = pageCount * STEP - GAP_PX;
+    sheetEl.style.setProperty('--pages-h', total + 'px');
+    let html = '';
+    for (let p = 0; p < pageCount; p++) {
+      html += '<div class="wsheet" style="top:' + p * STEP + 'px;height:' + H + 'px"></div>';
+    }
+    pagesLayer.innerHTML = html;
+    lastStep = STEP;
+    if (observer) observer.takeRecords();
+    queueNotes();
+    queueScroll();
+    reportPages();
+  }
+
+  let lastStep = 0;
+
+  /** Cuántas hojas hay y dónde están (en unidades de desplazamiento), para "Página N de M". */
+  function reportPages() {
+    if (typeof Android.pages !== 'function') return;
+    if (!paged() || !lastStep) { Android.pages(0, 0, 0, window.innerHeight); return; }
+    const pr = page.getBoundingClientRect();
+    const scale = page.offsetWidth ? pr.width / page.offsetWidth : 1;
+    Android.pages(pageCount, lastStep * scale, pr.top + window.scrollY, window.innerHeight);
+  }
+
   // ---------- Eventos ----------
 
   page.addEventListener('beforeinput', function (e) {
@@ -985,6 +1239,7 @@
     scheduleSave();
     queueReport();
     queueNotes();
+    queuePaginate();
   });
 
   page.addEventListener('click', function (e) {
@@ -1002,7 +1257,7 @@
     queueReport();
   });
 
-  window.addEventListener('resize', function () { fit(); queueNotes(); });
+  window.addEventListener('resize', function () { fit(); queueNotes(); queuePaginate(100); });
 
   // ---------- Notas adhesivas ----------
   // Cada nota se ancla a un párrafo (atributo data-anchor) y a un punto relativo dentro de él,
@@ -1346,6 +1601,16 @@
       document.body.classList.toggle('mobile', mode !== 'page');
       fit();
       queueNotes();
+      queuePaginate(0);
+    },
+    /** Tamaño y márgenes de la hoja, en puntos (pestaña Diseño). */
+    setPage: function (w, h, mt, mr, mb, ml) {
+      if (!(w > 0 && h > 0)) return;
+      applyPage({ w: w, h: h, mt: mt, mr: mr, mb: mb, ml: ml });
+      fit();
+      scheduleSave();
+      queueReport();
+      queuePaginate(0);
     },
     scrollToFraction: function (f) {
       const max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
@@ -1359,4 +1624,8 @@
   lastSaved = getHtml();
   setTimeout(sendModel, 0);
   queueReport();
+  queuePaginate(0);
+  window.addEventListener('load', function () { queuePaginate(0); });
+  // Imágenes que terminan de cargar cambian la altura del texto
+  page.addEventListener('load', function () { queuePaginate(); }, true);
 })();

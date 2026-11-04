@@ -127,8 +127,9 @@ impl<'a> Renderer<'a> {
         let mut out = String::new();
         let _ = write!(
             out,
-            "<article id=\"page\" data-src=\"wc\" data-w=\"{w}\" style=\"width:{w}pt;padding:{t}pt {r}pt {b}pt {l}pt\">",
+            "<article id=\"page\" data-src=\"wc\" data-w=\"{w}\" data-ph=\"{h}\" style=\"width:{w}pt;padding:{t}pt {r}pt {b}pt {l}pt\">",
             w = num(s.page_w),
+            h = num(s.page_h),
             t = num(s.margin_top),
             r = num(s.margin_right),
             b = num(s.margin_bottom),

@@ -48,15 +48,26 @@ body {
 #page table.doc td { min-width: 24pt; }
 #page .fn-area hr.fn-sep { width: 30%; margin: 0 0 6pt; border: 0; border-top: 1px solid #999; }
 
-/* Vista de página: hoja con su ancho real, como en Word */
+/* Vista de página: hojas del tamaño real, una debajo de otra, como en Word */
 body.paged { padding: 8px 0 160px; }
 #sheet { position: relative; }
 body.paged #sheet { width: fit-content; margin: 0 auto; }
 body.paged #page {
   margin: 0;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
-  min-height: 60vh;
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  min-height: var(--pages-h, 60vh);
 }
+#pages-layer { position: absolute; left: 0; top: 0; width: 100%; z-index: 0; pointer-events: none; }
+#pages-layer .wsheet { position: absolute; left: 0; right: 0; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25); }
+body.mobile #pages-layer { display: none; }
+body.paged #page img { max-height: var(--usable-h, none); width: auto; }
+/* Separadores entre hojas: no son texto */
+#page .wgap { display: block; -webkit-user-select: none; user-select: none; }
+#page tr.wgap td { border: none !important; padding: 0; background: transparent; }
+/* En vista de página el salto manual ya se ve como hoja nueva */
+body.paged #page hr.pb, body.paged #page .wpb { visibility: hidden; margin: 0; }
 
 /* Vista móvil: el texto se ajusta a la pantalla */
 body.mobile { background: #fff; }
@@ -76,7 +87,7 @@ body.dark.mobile #page [style*="background-color"]:not([style*="transparent"]) {
 body.readonly #page { caret-color: transparent; }
 
 /* Notas adhesivas: capa aparte para que no formen parte del texto */
-#notes-layer { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; }
+#notes-layer { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; z-index: 2; }
 .note-marker {
   position: absolute;
   width: 30px;

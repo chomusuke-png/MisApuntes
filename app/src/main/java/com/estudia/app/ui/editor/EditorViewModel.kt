@@ -33,6 +33,8 @@ data class EditorState(
     val painter: Boolean = false,
     /** Imagen seleccionada (null si no hay). */
     val image: ImageState? = null,
+    /** Hoja: tamaño y márgenes en puntos. */
+    val page: PageState = PageState(),
     val block: String = "p",
     val font: String = "",
     val size: Float = 12f,
@@ -44,6 +46,17 @@ data class EditorState(
     val hasSelection: Boolean = false,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
+)
+
+/** Tamaño de la hoja y márgenes, en puntos (Carta por defecto). */
+@Serializable
+data class PageState(
+    val w: Float = 612f,
+    val h: Float = 792f,
+    val mt: Float = 72f,
+    val mr: Float = 72f,
+    val mb: Float = 72f,
+    val ml: Float = 72f,
 )
 
 /** Imagen seleccionada: ancho en % de la hoja, alineación de su párrafo y tamaño en puntos. */
