@@ -329,7 +329,16 @@ fn build_para(ctx: &mut Ctx, doc: &mut Document, mp: &MPara) -> Paragraph {
             let _ = p.insert_text(end, &text, &props);
             last_props = props;
         } else if let Some(oref) = &seg.o {
-            if let Some(obj) = find_object(&ctx.orig.body, oref) {
+            if let Some(mut obj) = find_object(&ctx.orig.body, oref) {
+                // Imagen a la que se le cambió el tamaño en el editor
+                if let InlineObject::Image { w, h, .. } = &mut obj {
+                    if let (Some(nw), Some(nh)) = (seg.w, seg.ih) {
+                        if nw > 0.0 && nh > 0.0 && ((nw - *w).abs() > 0.5 || (nh - *h).abs() > 0.5) {
+                            *w = nw;
+                            *h = nh;
+                        }
+                    }
+                }
                 let _ = p.insert_object(end, obj, &last_props);
             }
         } else if let Some(file) = &seg.img {

@@ -19,6 +19,13 @@ import androidx.core.content.FileProvider
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.FormatPaint
+import androidx.compose.material.icons.automirrored.filled.RotateLeft
+import androidx.compose.material.icons.automirrored.filled.RotateRight
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material3.Slider
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FindReplace
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -299,10 +306,17 @@ fun EditorScreen(
         uri?.let { editor.flush { vm.exportWord(it) } }
     }
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
+    // La misma galería sirve para insertar una imagen nueva o reemplazar la seleccionada
+    var replacingImage by remember { mutableStateOf(false) }
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         uri?.let(vm::importImage)
     }
-    LaunchedEffect(Unit) { vm.imageReady.collect { editor.call("editor.insertImage", it) } }
+    LaunchedEffect(Unit) {
+        vm.imageReady.collect {
+            editor.call(if (replacingImage) "imageTools.replace" else "editor.insertImage", it)
+            replacingImage = false
+        }
+    }
     LaunchedEffect(Unit) {
         vm.shareFile.collect { f ->
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", f)
@@ -422,6 +436,11 @@ fun EditorScreen(
                     onHighlight = ::highlight,
                     onPick = { picker = it },
                     onInsertImage = {
+                        replacingImage = false
+                        gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    onReplaceImage = {
+                        replacingImage = true
                         gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     },
                     onFind = { finding = true },
@@ -483,6 +502,7 @@ fun EditorScreen(
                                     onScroll = { y, max -> vm.onScroll(y); docScroll = y to max },
                                     onModel = vm::saveModel,
                                     onFound = { cur, total -> found = cur to total },
+                                    onRotateImage = vm::rotateImage,
                                 ),
                                 initialScroll = vm.scrollY,
                                 onLoaded = { webReady++ },
@@ -616,6 +636,7 @@ internal class EditorBridge(
     private val onScroll: (Int, Int) -> Unit = { _, _ -> },
     private val onModel: (String) -> Unit = {},
     private val onFound: (Int, Int) -> Unit = { _, _ -> },
+    private val onRotateImage: (String, Int) -> String = { _, _ -> "" },
 ) {
     private val main = Handler(Looper.getMainLooper())
 
@@ -624,6 +645,8 @@ internal class EditorBridge(
     @JavascriptInterface fun model(json: String) = onModel(json)
     /** Resultado de Buscar: coincidencia actual (desde 1) y total. */
     @JavascriptInterface fun found(current: Int, total: Int) { main.post { onFound(current, total) } }
+    /** Gira una imagen del documento; devuelve el archivo nuevo ("" si no se pudo). */
+    @JavascriptInterface fun rotateImage(src: String, degrees: Int): String = onRotateImage(src, degrees)
     @JavascriptInterface fun onState(json: String) = onState.invoke(json)
     @JavascriptInterface fun openNote(id: String) { id.toLongOrNull()?.let { main.post { onNoteTap(it) } } }
     @JavascriptInterface fun placeNote(anchor: String) { main.post { onNotePlaced(anchor) } }
@@ -690,10 +713,23 @@ internal fun FormattingToolbar(
     onInsertImage: (() -> Unit)? = null,
     onFind: (() -> Unit)? = null,
     onStats: (() -> Unit)? = null,
+    onReplaceImage: (() -> Unit)? = null,
 ) {
     // Cinta como la de Word: pestañas arriba y sus herramientas debajo
     var tab by rememberSaveable { mutableStateOf(RibbonTab.HOME) }
-    val tabs = RibbonTab.entries.filter { it != RibbonTab.REVIEW || onFind != null || onStats != null }
+    val image = format.image
+    val tabs = RibbonTab.entries.filter {
+        when (it) {
+            RibbonTab.REVIEW -> onFind != null || onStats != null
+            RibbonTab.IMAGE -> image != null
+            else -> true
+        }
+    }
+    // Al tocar una imagen se abre su pestaña; al soltarla se vuelve a Inicio
+    LaunchedEffect(image != null) {
+        if (image != null) tab = RibbonTab.IMAGE
+        else if (tab == RibbonTab.IMAGE) tab = RibbonTab.HOME
+    }
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Column {
             Row(
@@ -716,6 +752,7 @@ internal fun FormattingToolbar(
                     RibbonTab.HOME -> HomeTools(format, quickHighlight, recentHighlights, editor, onHighlight, onPick)
                     RibbonTab.INSERT -> InsertTools(editor, onInsertImage)
                     RibbonTab.PARAGRAPH -> ParagraphTools(format, editor)
+                    RibbonTab.IMAGE -> if (image != null) ImageTools(image, editor, onReplaceImage)
                     RibbonTab.REVIEW -> {
                         onFind?.let { RibbonButton(Icons.Default.FindReplace, "Buscar y reemplazar", it) }
                         onStats?.let { RibbonButton(Icons.Default.Numbers, "Contar palabras", it) }
@@ -731,6 +768,73 @@ private enum class RibbonTab(val label: String) {
     INSERT("Insertar"),
     PARAGRAPH("Párrafo"),
     REVIEW("Revisar"),
+    IMAGE("Imagen"),
+}
+
+private const val MIN_IMAGE_PT = 12f
+private const val PT_PER_CM = 28.3465f
+
+@Composable
+private fun SizeSlider(label: String, value: Float, range: ClosedFloatingPointRange<Float>, onChange: (Float) -> Unit, onDone: () -> Unit) {
+    Column(Modifier.width(150.dp).padding(horizontal = 6.dp)) {
+        Text("$label: ${"%.1f".format(Locale.forLanguageTag("es"), value / PT_PER_CM)} cm", fontSize = 11.sp)
+        Slider(
+            value = value.coerceIn(range),
+            onValueChange = onChange,
+            onValueChangeFinished = onDone,
+            valueRange = range,
+            modifier = Modifier.height(32.dp),
+        )
+    }
+}
+
+/** Imagen (solo con una imagen seleccionada): tamaño, alineación, girar, reemplazar y eliminar. */
+@Composable
+private fun ImageTools(image: ImageState, editor: WebEditor, onReplace: (() -> Unit)?) {
+    // Ancho (X) y alto (Y); vinculados mantienen la proporción que tiene la imagen ahora
+    var linked by rememberSaveable { mutableStateOf(true) }
+    var w by remember(image.w) { mutableFloatStateOf(image.w) }
+    var h by remember(image.h) { mutableFloatStateOf(image.h) }
+    val ratio = if (image.w > 0f) image.h / image.w else 1f
+    val maxW = maxOf(image.maxW, image.w)
+    val maxH = maxOf(image.maxW * 1.5f, image.h)
+    fun apply() = editor.call("imageTools.setSize", w.roundToInt(), h.roundToInt())
+
+    SizeSlider("Ancho", w, MIN_IMAGE_PT..maxW, onChange = {
+        w = it
+        if (linked) h = (it * ratio).coerceAtLeast(MIN_IMAGE_PT)
+    }, onDone = ::apply)
+    IconToggleButton(checked = linked, onCheckedChange = { linked = it }) {
+        Icon(
+            if (linked) Icons.Default.Link else Icons.Default.LinkOff,
+            if (linked) "Desvincular ancho y alto" else "Vincular ancho y alto",
+            tint = if (linked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    SizeSlider("Alto", h, MIN_IMAGE_PT..maxH, onChange = {
+        h = it
+        if (linked && ratio > 0f) w = (it / ratio).coerceIn(MIN_IMAGE_PT, maxW)
+    }, onDone = ::apply)
+    // Tamaños rápidos: con la proporción original de la imagen
+    listOf(25 to "Pequeña", 50 to "Mediana", 100 to "Completa").forEach { (p, label) ->
+        TextButton(onClick = { editor.call("imageTools.size", p) }) { Text(label, fontSize = 12.sp) }
+    }
+    ToolbarDivider()
+    StyleToggle(Icons.AutoMirrored.Filled.FormatAlignLeft, "Alinear a la izquierda", image.align == "left") {
+        editor.call("imageTools.align", "left")
+    }
+    StyleToggle(Icons.Default.FormatAlignCenter, "Centrar", image.align == "center") {
+        editor.call("imageTools.align", "center")
+    }
+    StyleToggle(Icons.AutoMirrored.Filled.FormatAlignRight, "Alinear a la derecha", image.align == "right") {
+        editor.call("imageTools.align", "right")
+    }
+    ToolbarDivider()
+    RibbonButton(Icons.AutoMirrored.Filled.RotateLeft, "Girar izq.") { editor.call("imageTools.rotate", -90) }
+    RibbonButton(Icons.AutoMirrored.Filled.RotateRight, "Girar der.") { editor.call("imageTools.rotate", 90) }
+    ToolbarDivider()
+    if (onReplace != null) RibbonButton(Icons.Default.SwapHoriz, "Reemplazar", onReplace)
+    RibbonButton(Icons.Default.Delete, "Eliminar") { editor.call("imageTools.remove") }
 }
 
 /** Barra de Buscar y reemplazar, bajo la cinta. */

@@ -368,6 +368,20 @@ class Repository(private val context: Context, private val db: AppDatabase) {
         name
     }
 
+    /** Gira 90°/180° una imagen de [dir] en un archivo nuevo (el anterior queda para deshacer). */
+    fun rotateImage(dir: File, name: String, degrees: Int): String {
+        val source = File(dir, File(name).name).takeIf { it.exists() } ?: error("Imagen no encontrada")
+        val bitmap = BitmapFactory.decodeFile(source.path) ?: error("No se pudo leer la imagen")
+        val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
+        val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        val png = source.extension.equals("png", ignoreCase = true)
+        val target = File(dir, "img-${UUID.randomUUID().toString().take(8)}.${if (png) "png" else "jpg"}")
+        target.outputStream().use {
+            rotated.compress(if (png) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG, 90, it)
+        }
+        return target.name
+    }
+
     /** Las fotos de cámara guardan la orientación aparte (EXIF): se aplica para que no salgan giradas. */
     private fun rotateByExif(source: Uri, bitmap: Bitmap): Bitmap {
         val degrees = runCatching {

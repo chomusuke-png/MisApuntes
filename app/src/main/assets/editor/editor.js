@@ -111,6 +111,10 @@
   function getHtml() {
     const copy = page.cloneNode(true);
     ['contenteditable', 'spellcheck', 'inputmode'].forEach(function (a) { copy.removeAttribute(a); });
+    copy.querySelectorAll('img.wsel').forEach(function (img) {
+      img.classList.remove('wsel');
+      if (!img.className) img.removeAttribute('class');
+    });
     return copy.outerHTML.replace(/​/g, '');
   }
 
@@ -143,6 +147,8 @@
   function markChanges(records) {
     records.forEach(function (r) {
       if (r.type === 'attributes' && (r.attributeName === 'data-d' || r.attributeName === 'data-anchor')) return;
+      // Marcar una imagen como seleccionada no cambia el documento
+      if (r.type === 'attributes' && r.attributeName === 'class' && r.target.tagName === 'IMG') return;
       if (r.target === page) {
         r.addedNodes.forEach(markDirty);
         return;
@@ -276,7 +282,12 @@
         if (n.nodeType !== 1) continue;
         const tag = n.tagName;
         if (n.classList.contains('wl')) continue;
-        if (n.dataset.o) { push({ o: n.dataset.o }); continue; }
+        if (n.dataset.o) {
+          // Imagen del original: puede venir con otro tamaño
+          if (tag === 'IMG') push({ o: n.dataset.o, w: sizePt(n.style.width || '') || undefined, ih: sizePt(n.style.height || '') || undefined });
+          else push({ o: n.dataset.o });
+          continue;
+        }
         if (n.dataset.pb) { push({ pb: parseInt(n.dataset.pb, 10) || 1 }); continue; }
         if (tag === 'BR') { push({ br: true }); continue; }
         if (tag === 'IMG') {
@@ -556,6 +567,125 @@
     afterCommand();
   }
 
+  // ---------- Imagen seleccionada ----------
+
+  let selectedImg = null;
+
+  function selectImage(img) {
+    if (selectedImg === img) return;
+    if (selectedImg) selectedImg.classList.remove('wsel');
+    selectedImg = img;
+    if (img) {
+      img.classList.add('wsel');
+      const r = document.createRange();
+      r.selectNode(img);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      savedRange = r.cloneRange();
+    }
+    queueReport();
+  }
+
+  /** Ancho útil de la hoja en puntos (sin márgenes). */
+  function contentWidthPt() {
+    const cs = getComputedStyle(page);
+    const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+    const w = parseFloat(page.dataset.w || '0');
+    if (w > 0 && document.body.classList.contains('paged')) {
+      return w - (sizePt(page.style.paddingLeft || '') || 0) - (sizePt(page.style.paddingRight || '') || 0);
+    }
+    return Math.max(100, (page.clientWidth - pad) * 0.75);
+  }
+
+  function imageWidthPt(img) {
+    return sizePt(img.style.width || '') || img.getBoundingClientRect().width * 0.75;
+  }
+
+  function imagePct(img) {
+    return Math.max(5, Math.min(100, Math.round(imageWidthPt(img) / contentWidthPt() * 100)));
+  }
+
+  function imageHeightPt(img) {
+    return sizePt(img.style.height || '') || img.getBoundingClientRect().height * 0.75;
+  }
+
+  /** Proporción original del archivo (alto / ancho). */
+  function imageRatio(img) {
+    if (img.naturalWidth) return img.naturalHeight / img.naturalWidth;
+    const w = imageWidthPt(img);
+    return w ? imageHeightPt(img) / w : 0.75;
+  }
+
+  /** Cambia el tamaño con la proporción original. */
+  function setImageWidth(img, pt) {
+    const w = Math.max(12, Math.round(pt));
+    img.style.width = w + 'pt';
+    img.style.height = Math.round(w * imageRatio(img)) + 'pt';
+  }
+
+  function imageCommand(fn) {
+    const img = selectedImg;
+    if (!img || !page.contains(img) || readOnly) return;
+    if (typingTimer) snapshot();
+    fn(img);
+    afterCommand();
+  }
+
+  window.imageTools = {
+    /** Ancho y alto libres, en puntos (la barra decide si van vinculados). */
+    setSize: function (w, h) {
+      imageCommand(function (img) {
+        img.style.width = Math.max(12, Math.round(w)) + 'pt';
+        img.style.height = Math.max(12, Math.round(h)) + 'pt';
+      });
+    },
+    size: function (pct) {
+      imageCommand(function (img) { setImageWidth(img, contentWidthPt() * Math.max(5, Math.min(100, pct)) / 100); });
+    },
+    align: function (where) {
+      imageCommand(function (img) {
+        const b = blockOf(img);
+        if (b) b.style.textAlign = where;
+      });
+    },
+    /** Gira el archivo (Kotlin escribe uno nuevo) y cambia ancho por alto. */
+    rotate: function (degrees) {
+      imageCommand(function (img) {
+        if (typeof Android.rotateImage !== 'function') return;
+        const name = Android.rotateImage(img.getAttribute('src') || '', degrees);
+        if (!name) return;
+        const w = imageWidthPt(img), h = sizePt(img.style.height || '') || w * imageRatio(img);
+        img.removeAttribute('data-o');
+        img.setAttribute('src', name);
+        // El ancho nuevo es el alto anterior, sin pasarse de la hoja
+        const nw = Math.min(h, contentWidthPt());
+        img.style.width = Math.round(nw) + 'pt';
+        img.style.height = Math.round(nw * (w / h)) + 'pt';
+      });
+    },
+    /** Otra imagen en el mismo lugar y con el mismo ancho. */
+    replace: function (name) {
+      imageCommand(function (img) {
+        const w = imageWidthPt(img);
+        img.removeAttribute('data-o');
+        img.onload = function () {
+          img.onload = null;
+          setImageWidth(img, w);
+          scheduleSave();
+          queueReport();
+        };
+        img.setAttribute('src', String(name).replace(/[&"<>]/g, ''));
+      });
+    },
+    remove: function () {
+      imageCommand(function (img) {
+        selectImage(null);
+        img.remove();
+      });
+    }
+  };
+
   // ---------- Buscar y reemplazar ----------
 
   let found = [];
@@ -807,6 +937,13 @@
       ul: state('insertUnorderedList'),
       ol: state('insertOrderedList'),
       hasSelection: sel.rangeCount > 0 && !sel.isCollapsed && page.contains(sel.getRangeAt(0).commonAncestorContainer),
+      image: selectedImg && page.contains(selectedImg) ? {
+        pct: imagePct(selectedImg),
+        align: align(blockOf(selectedImg) || selectedImg) || 'left',
+        w: Math.round(imageWidthPt(selectedImg)),
+        h: Math.round(imageHeightPt(selectedImg)),
+        maxW: Math.round(contentWidthPt())
+      } : null,
       canUndo: hIndex > 0 || typingTimer !== null,
       canRedo: hIndex < history.length - 1
     };
@@ -853,6 +990,8 @@
   page.addEventListener('click', function (e) {
     // Los enlaces no navegan dentro del editor
     if (e.target.closest && e.target.closest('a')) e.preventDefault();
+    // Tocar una imagen la selecciona (aparece la pestaña Imagen); tocar otra cosa la suelta
+    selectImage(!readOnly && e.target.tagName === 'IMG' ? e.target : null);
   });
 
   document.addEventListener('selectionchange', function () {

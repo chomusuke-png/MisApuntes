@@ -106,6 +106,12 @@ class NoteEditorViewModel(app: Application, savedState: SavedStateHandle) : Andr
     /** Nombre de archivo de una imagen lista para insertar en el editor. */
     val imageReady = MutableSharedFlow<String>(extraBufferCapacity = 2)
 
+    /** Llamado desde JavaScript (sincrónico): gira la imagen y devuelve el nombre del archivo nuevo. */
+    fun rotateImage(src: String, degrees: Int): String {
+        val dir = content.value?.baseDir ?: return ""
+        return runCatching { repo.rotateImage(dir, src, degrees) }.getOrDefault("")
+    }
+
     val recentHighlights = repo.recentColors.recent(ColorKind.HIGHLIGHT)
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val recentTextColors = repo.recentColors.recent(ColorKind.TEXT)
@@ -196,7 +202,14 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
     }
 
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
-    LaunchedEffect(Unit) { vm.imageReady.collect { editor.call("editor.insertImage", it) } }
+    // La imagen elegida se inserta o, si se pidió reemplazar, toma el lugar de la seleccionada
+    var replacingImage by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        vm.imageReady.collect {
+            editor.call(if (replacingImage) "imageTools.replace" else "editor.insertImage", it)
+            replacingImage = false
+        }
+    }
     LaunchedEffect(darkTheme) { editor.call("editor.setDark", darkTheme) }
     // Nota recién creada: el cursor va directo al título
     LaunchedEffect(title != null) {
@@ -261,7 +274,8 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
                 editor = editor,
                 onHighlight = ::highlight,
                 onPick = { picker = it },
-                onInsertImage = { imageDialog = true },
+                onInsertImage = { replacingImage = false; imageDialog = true },
+                onReplaceImage = { replacingImage = true; imageDialog = true },
             )
             }
         },
@@ -300,7 +314,7 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
                                 readOnly = false,
                                 paged = false,
                                 dark = darkTheme,
-                                bridge = EditorBridge(onSave = vm::save, onState = vm::onState),
+                                bridge = EditorBridge(onSave = vm::save, onState = vm::onState, onRotateImage = vm::rotateImage),
                             ).also { editor.view = it }
                         },
                         onRelease = { editor.view = null },

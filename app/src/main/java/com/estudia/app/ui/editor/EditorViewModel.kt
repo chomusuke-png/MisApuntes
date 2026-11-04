@@ -31,6 +31,8 @@ data class EditorState(
     val sub: Boolean = false,
     /** Brocha armada: hay un formato copiado esperando aplicarse. */
     val painter: Boolean = false,
+    /** Imagen seleccionada (null si no hay). */
+    val image: ImageState? = null,
     val block: String = "p",
     val font: String = "",
     val size: Float = 12f,
@@ -42,6 +44,17 @@ data class EditorState(
     val hasSelection: Boolean = false,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
+)
+
+/** Imagen seleccionada: ancho en % de la hoja, alineación de su párrafo y tamaño en puntos. */
+@Serializable
+data class ImageState(
+    val pct: Int = 100,
+    val align: String = "left",
+    val w: Float = 0f,
+    val h: Float = 0f,
+    /** Ancho útil de la hoja. */
+    val maxW: Float = 450f,
 )
 
 /** Punto donde se tocó en el editor web: párrafo (data-anchor) y posición relativa. */
@@ -104,6 +117,12 @@ class EditorViewModel(app: Application, savedState: SavedStateHandle) : AndroidV
 
     /** Nombre del archivo de imagen listo para insertar en el editor. */
     val imageReady = MutableSharedFlow<String>(extraBufferCapacity = 1)
+
+    /** Llamado desde JavaScript (sincrónico): gira la imagen y devuelve el nombre del archivo nuevo. */
+    fun rotateImage(src: String, degrees: Int): String {
+        val dir = _content.value?.baseDir ?: return ""
+        return runCatching { repo.rotateImage(dir, src, degrees) }.getOrDefault("")
+    }
 
     fun importImage(uri: Uri) = viewModelScope.launch {
         busy.value = true

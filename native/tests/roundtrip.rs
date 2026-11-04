@@ -140,3 +140,19 @@ fn paragraph_spacing_lists_and_quote() {
     let html = wordbridge::to_html(out.to_str().unwrap(), "docx", dir.to_str().unwrap()).unwrap();
     assert!(html.contains("<blockquote data-b=\"0\""));
 }
+
+#[test]
+fn resized_original_image_keeps_new_size() {
+    let dir = tmp("img");
+    let out = dir.join("out.docx");
+    let orig = wordbridge::open(&res("sample.docx"), "docx").unwrap();
+    let mut blocks: Vec<String> = (0..orig.body.len()).map(|i| format!("{{\"k\":\"{i}\"}}")).collect();
+    blocks[8] = r##"{"p":{"src":"8","tag":"p","segs":[{"o":"8#0","w":120,"ih":60},{"t":"Imagen:","r":"8#1"}]}}"##.to_string();
+    let model = format!("{{\"blocks\":[{}]}}", blocks.join(","));
+    wordbridge::to_docx(&res("sample.docx"), "docx", &model, dir.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+    let doc = wordbridge::open(out.to_str().unwrap(), "docx").unwrap();
+    match &doc.body[8].as_para().unwrap().objects[0] {
+        wordcraft_doc::InlineObject::Image { w, h, .. } => assert_eq!((*w, *h), (120.0, 60.0)),
+        o => panic!("no es imagen: {o:?}"),
+    }
+}
