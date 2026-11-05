@@ -1,0 +1,12 @@
+[package]
+name = "verify"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wordbridge = { path = "../../../native" }
+wordcraft-doc = { git = "https://github.com/storytold/wordcraft", rev = "ffb155a0321bba08da495efda66495104c1c8b9a" }
+serde_json = "1"

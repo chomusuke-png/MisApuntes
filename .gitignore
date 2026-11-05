@@ -5,3 +5,5 @@ build/
 *.iml
 .kotlin/
 /native/target/
+/tools/editor-e2e/build/
+/tools/editor-e2e/verify/Cargo.lock
