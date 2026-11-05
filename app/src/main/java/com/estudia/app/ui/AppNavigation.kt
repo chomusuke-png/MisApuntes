@@ -17,6 +17,7 @@ import com.estudia.app.ui.home.HomeScreen
 import com.estudia.app.ui.notes.NoteEditorScreen
 import com.estudia.app.ui.pdf.PdfViewerScreen
 import com.estudia.app.ui.settings.SettingsScreen
+import com.estudia.app.update.UpdateDialog
 import kotlinx.coroutines.launch
 
 private const val HOME = "home"
@@ -28,8 +29,13 @@ private const val STICKY_NOTE = "note/{id}"
 @Composable
 fun AppNavigation(darkTheme: Boolean, openRequest: Long?, onOpenRequestHandled: () -> Unit) {
     val nav = rememberNavController()
-    val repo = (LocalContext.current.applicationContext as EstudiaApp).repository
+    val app = LocalContext.current.applicationContext as EstudiaApp
+    val repo = app.repository
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        if (app.settings.autoUpdateCheck) app.updater.checkOnStart()
+    }
 
     /** Los PDF van al visor de páginas; el resto al editor. */
     fun open(id: Long) {
@@ -49,9 +55,11 @@ fun AppNavigation(darkTheme: Boolean, openRequest: Long?, onOpenRequestHandled: 
     NavHost(navController = nav, startDestination = HOME) {
         composable(HOME) {
             HomeScreen(onOpenDocument = ::open, onOpenSettings = { nav.navigate(SETTINGS) { launchSingleTop = true } })
+            UpdateDialog()
         }
         composable(SETTINGS) {
             SettingsScreen(onBack = { nav.popBackStack() })
+            UpdateDialog()
         }
         composable(EDITOR, arguments = listOf(navArgument("id") { type = NavType.LongType })) {
             EditorScreen(

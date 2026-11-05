@@ -77,7 +77,17 @@ class Settings(context: Context) {
         prefs.edit().putFloat(KEY_HL_OPACITY, value).apply()
     }
 
+    /** busca una version nueva cada vez que se abre la app */
+    var autoUpdateCheck by mutableStateOf(prefs.getBoolean(KEY_AUTO_UPDATE, true))
+        private set
+
+    fun updateAutoUpdateCheck(value: Boolean) {
+        autoUpdateCheck = value
+        prefs.edit().putBoolean(KEY_AUTO_UPDATE, value).apply()
+    }
+
     private companion object {
+        const val KEY_AUTO_UPDATE = "auto_update_check"
         const val KEY_THEME = "theme"
         const val KEY_TOOLBAR = "toolbar_position"
         const val KEY_PEN_WIDTH = "pen_width"

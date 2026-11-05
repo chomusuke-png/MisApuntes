@@ -1,17 +1,21 @@
 package com.estudia.app.ui.settings
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Autorenew
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.material.icons.filled.VerticalAlignTop
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -21,6 +25,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -28,7 +33,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import com.estudia.app.BuildConfig
 import com.estudia.app.EstudiaApp
+import com.estudia.app.update.UpdateState
 import com.estudia.app.data.ThemeMode
 import com.estudia.app.data.ToolbarPosition
 import com.estudia.app.ui.theme.appBarColors
@@ -36,7 +43,9 @@ import com.estudia.app.ui.theme.appBarColors
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
-    val settings = (LocalContext.current.applicationContext as EstudiaApp).settings
+    val app = LocalContext.current.applicationContext as EstudiaApp
+    val settings = app.settings
+    val updater = app.updater
     Scaffold(
         topBar = {
             TopAppBar(
@@ -113,6 +122,37 @@ fun SettingsScreen(onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            Text(
+                "Actualizaciones",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 4.dp),
+            )
+            ListItem(
+                headlineContent = { Text("Buscar al abrir la app") },
+                leadingContent = { Icon(Icons.Default.Autorenew, contentDescription = null) },
+                trailingContent = { Switch(checked = settings.autoUpdateCheck, onCheckedChange = null) },
+                modifier = Modifier.toggleable(
+                    value = settings.autoUpdateCheck,
+                    role = Role.Switch,
+                    onValueChange = settings::updateAutoUpdateCheck,
+                ),
+            )
+            ListItem(
+                headlineContent = { Text("Buscar actualizaciones") },
+                supportingContent = {
+                    Text(
+                        when (val state = updater.state) {
+                            UpdateState.Checking -> "Buscando…"
+                            UpdateState.UpToDate -> "Tienes la última versión (${BuildConfig.VERSION_NAME})"
+                            is UpdateState.Failed -> state.message
+                            else -> "Versión ${BuildConfig.VERSION_NAME}"
+                        }
+                    )
+                },
+                leadingContent = { Icon(Icons.Default.SystemUpdate, contentDescription = null) },
+                modifier = Modifier.clickable { updater.check(manual = true) },
             )
         }
     }

@@ -6,6 +6,12 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// cada release sube este numero y su tag debe coincidir, por ejemplo 1.0.1 y v1.0.1
+val appVersion = providers.gradleProperty("appVersion").getOrElse("1.0.0")
+val appVersionCode = appVersion.split(".").map(String::toInt).let { (major, minor, patch) ->
+    major * 10_000 + minor * 100 + patch
+}
+
 android {
     namespace = "com.estudia.app"
     compileSdk = 36
@@ -15,8 +21,8 @@ android {
         applicationId = "com.estudia.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersion
     }
 
     buildTypes {
@@ -34,6 +40,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     packaging {
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}", "/META-INF/DEPENDENCIES")

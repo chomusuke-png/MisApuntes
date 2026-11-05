@@ -4,4 +4,6 @@
     <cache-path name="camera" path="camera/" />
     <!-- Documentos guardados como Word para compartirlos -->
     <cache-path name="share" path="share/" />
+    <!-- version nueva descargada para instalarla -->
+    <cache-path name="update" path="update/" />
 </paths>
