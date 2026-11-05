@@ -89,6 +89,9 @@ pub struct MPara {
     /// Línea horizontal insertada en el editor: párrafo vacío con borde inferior.
     #[serde(default)]
     pub rule: bool,
+    /// Se le quitó la lista de Word en el editor.
+    #[serde(default)]
+    pub nonum: bool,
     /// Tipo de viñeta o numeración (list-style-type de CSS).
     pub list_style: Option<String>,
     /// Interlineado (múltiplo de sencillo), espacio antes/después y sangría izquierda en puntos.
@@ -551,22 +554,23 @@ fn build_para(ctx: &mut Ctx, doc: &mut Document, mp: &MPara) -> Paragraph {
         };
     }
 
-    // Listas creadas en el editor (las de Word conservan su numeración)
-    let had_numbering = src_para.and_then(|sp| doc.styles.resolve_para(&sp.props).numbering).is_some_and(|n| n.num != 0);
+    // Listas del editor. Las de Word que no se tocaron llegan como párrafos, con su numeración:
+    // un <li> con origen es un párrafo que se puso en una lista o se cambió de tipo en el editor.
     if let Some(list) = mp.list.as_deref() {
-        if !had_numbering {
-            let kind = list_kind(list, mp.list_style.as_deref());
-            let key = (mp.list_id, list == "ol");
-            let num = match ctx.lists.get(&key) {
-                Some(n) => *n,
-                None => {
-                    let n = doc.numbering.add_list(kind);
-                    ctx.lists.insert(key, n);
-                    n
-                }
-            };
-            p.props.numbering = Some(NumRef { num, level: mp.level.min(8) });
-        }
+        let kind = list_kind(list, mp.list_style.as_deref());
+        let key = (mp.list_id, list == "ol");
+        let num = match ctx.lists.get(&key) {
+            Some(n) => *n,
+            None => {
+                let n = doc.numbering.add_list(kind);
+                ctx.lists.insert(key, n);
+                n
+            }
+        };
+        p.props.numbering = Some(NumRef { num, level: mp.level.min(8) });
+    } else if mp.nonum {
+        // num 0: sin lista, también si la numeración venía del estilo del párrafo
+        p.props.numbering = Some(NumRef { num: 0, level: 0 });
     }
 
     // Interlineado, espacio antes/después y sangría: solo si cambiaron a la vista

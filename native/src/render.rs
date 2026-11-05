@@ -15,6 +15,7 @@ use wordcraft_doc::PartKind;
 use wordcraft_doc::props::{Align, BorderStyle, Borders, LineSpacing, Underline, VertAlign};
 use wordcraft_doc::styles::TablePart;
 use wordcraft_doc::resolve::{ResolvedChar, ResolvedPara};
+use wordcraft_doc::section::NumFormat;
 use wordcraft_doc::{Block, Blocks, CharProps, Document, Paragraph, Rgb, Table, TextColor};
 
 /// Lo que se ve de un trozo de texto: es lo que se compara al guardar para saber si cambió.
@@ -224,7 +225,15 @@ impl<'a> Renderer<'a> {
                         lc.font = base_look.font.clone();
                     }
                     let css = diff_css(&lc, &base_look);
-                    let _ = write!(out, "<span class=\"wl\" contenteditable=\"false\" style=\"{css}\">{}&emsp;</span>", esc(&shown));
+                    // data-lk: viñeta o numeración; data-ln y data-lv: su lista y nivel en Word
+                    let kind = if level.format == NumFormat::Bullet { "ul" } else { "ol" };
+                    let _ = write!(
+                        out,
+                        "<span class=\"wl\" data-lk=\"{kind}\" data-ln=\"{}\" data-lv=\"{}\" contenteditable=\"false\" style=\"{css}\">{}&emsp;</span>",
+                        n.num,
+                        n.level,
+                        esc(&shown)
+                    );
                 }
             }
         }
@@ -695,8 +704,7 @@ pub fn num(v: f32) -> String {
 }
 
 /// Numeración de páginas como la entiende el editor: "1", "i", "I", "a" o "A".
-fn page_format(f: wordcraft_doc::section::NumFormat) -> &'static str {
-    use wordcraft_doc::section::NumFormat;
+fn page_format(f: NumFormat) -> &'static str {
     match f {
         NumFormat::LowerRoman => "i",
         NumFormat::UpperRoman => "I",

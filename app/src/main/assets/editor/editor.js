@@ -72,6 +72,8 @@
     clearTimeout(typingTimer);
     typingTimer = null;
     if (hfLive) hfSync();
+    // La foto tiene que llevar las marcas de cambio: deshacer o rehacer la restaura tal cual
+    if (observer) markChanges(observer.takeRecords());
     const html = cleanInner();
     if (hIndex >= 0 && history[hIndex].html === html) {
       history[hIndex].caret = caret();
@@ -310,8 +312,11 @@
         if (tag === 'IMG') {
           const ratio = n.naturalWidth ? n.naturalHeight / n.naturalWidth : 0.75;
           let w = sizePt(n.style.width || '') || (n.naturalWidth ? n.naturalWidth * 0.75 : 300);
-          w = Math.min(w, 450);
-          push({ img: n.getAttribute('src'), w: w, ih: sizePt(n.style.height || '') || w * ratio });
+          let h = sizePt(n.style.height || '') || w * ratio;
+          // No más ancha que el texto de la hoja, sin deformarla
+          const ps = pageSetup(), max = Math.max(72, ps.w - ps.ml - ps.mr);
+          if (w > max) { h *= max / w; w = max; }
+          push({ img: n.getAttribute('src'), w: w, ih: h });
           continue;
         }
         if ((tag === 'UL' || tag === 'OL') && nestedLists) { nestedLists.push(n); continue; }
@@ -377,6 +382,12 @@
     const kind = list.tagName.toLowerCase();
     let first = true;
     for (let li = list.firstElementChild; li; li = li.nextElementSibling) {
+      // Aumentar la sangría en Chrome deja la lista nueva directamente dentro de la otra, sin <li>
+      if (li.tagName === 'UL' || li.tagName === 'OL') {
+        listModel(li, level + 1, out, first ? firstSrc : null);
+        first = false;
+        continue;
+      }
       if (li.tagName !== 'LI') continue;
       const nested = [];
       const p = paraBox(li, false);
@@ -386,7 +397,8 @@
       p.list = kind;
       p.list_style = list.style.listStyleType || null;
       p.list_id = id;
-      p.level = level;
+      // data-lv: nivel que tenía en Word el párrafo convertido a esta lista
+      p.level = level + (parseInt(li.dataset.lv || '0', 10) || 0);
       p.align = align(li);
       p.segs = segments(li, nested);
       out.push({ p: p });
@@ -432,6 +444,8 @@
         continue;
       }
       if (tag === 'UL' || tag === 'OL') { listModel(n, 0, out); continue; }
+      // Salto de página suelto entre párrafos (documentos guardados por versiones anteriores)
+      if (n.dataset.pb) { out.push({ p: { tag: 'p', segs: [{ pb: parseInt(n.dataset.pb, 10) || 1 }] } }); continue; }
       if (/^(DIV|SECTION|BLOCKQUOTE)$/.test(tag) && n.querySelector('p,h1,h2,h3,h4,h5,h6,div,table,ul,ol')) {
         blocksOf(n, counts, out);
         continue;
@@ -441,6 +455,7 @@
       p.src = b || null;
       p.tag = blockTag(tag);
       p.align = align(n);
+      if (n.dataset.nonum) p.nonum = true;
       p.segs = segments(n, nested);
       // Chrome a veces deja la lista nueva dentro del párrafo original: la lista hereda su origen
       if (p.segs.length || !nested.length) out.push({ p: p });
@@ -539,6 +554,7 @@
 
   function afterCommand() {
     fixFontSizes();
+    liftLists();
     snapshot();
     scheduleSave();
     queueReport();
@@ -550,6 +566,113 @@
     const parent = el.parentNode;
     while (el.firstChild) parent.insertBefore(el.firstChild, el);
     parent.removeChild(el);
+  }
+
+  /** Mueve nodos del documento sin perder la selección (Chrome la colapsa al sacarlos de su lugar). */
+  function keepingSelection(fn) {
+    const sel = window.getSelection();
+    const r = sel.rangeCount ? sel.getRangeAt(0) : null;
+    const pos = r && [r.startContainer, r.startOffset, r.endContainer, r.endOffset];
+    fn();
+    if (!pos || !ed.contains(pos[0]) || !ed.contains(pos[2])) return;
+    const again = document.createRange();
+    again.setStart(pos[0], pos[1]);
+    again.setEnd(pos[2], pos[3]);
+    sel.removeAllRanges();
+    sel.addRange(again);
+    savedRange = again.cloneRange();
+  }
+
+  /**
+   * Chrome deja la lista nueva dentro del párrafo original. Un <ul> dentro de <p> no sobrevive a
+   * volver a leer el HTML (quedan párrafos vacíos), así que la lista pasa a ocupar su lugar.
+   */
+  function liftLists() {
+    const lists = ed.querySelectorAll('p > ul, p > ol, h1 > ul, h1 > ol, h2 > ul, h2 > ol, h3 > ul, h3 > ol, h4 > ul, h4 > ol, h5 > ul, h5 > ol, h6 > ul, h6 > ol');
+    if (!lists.length) return;
+    keepingSelection(function () {
+      lists.forEach(function (list) {
+        const p = list.parentNode;
+        if (!p || !p.parentNode) return;
+        const tail = p.cloneNode(false);
+        tail.removeAttribute('data-b');
+        tail.removeAttribute('data-d');
+        tail.removeAttribute('data-anchor');
+        while (list.nextSibling) tail.appendChild(list.nextSibling);
+        const rest = function (el) { return !!el.textContent.replace(/[\s​]/g, '') || !!el.querySelector('img,table,.wo'); };
+        p.removeChild(list);
+        p.parentNode.insertBefore(list, p.nextSibling);
+        if (rest(tail)) list.parentNode.insertBefore(tail, list.nextSibling);
+        if (!rest(p)) {
+          // Sin nada más: la lista toma su origen en Word y el párrafo desaparece
+          const li = list.querySelector('li');
+          if (li && p.dataset.b && !li.dataset.b) li.dataset.b = p.dataset.b;
+          if (li && p.dataset.anchor && !li.dataset.anchor) li.dataset.anchor = p.dataset.anchor;
+          p.remove();
+        }
+      });
+    });
+  }
+
+  // ---------- Listas que vienen de Word ----------
+  // Son párrafos con su número o viñeta en un span (.wl), no <ul>/<ol>: las herramientas de lista
+  // no los reconocen, así que se tratan aquí. Quitarla marca el párrafo con data-nonum; cambiarla
+  // lo convierte en una lista del editor que mantiene su origen.
+
+  function wordMark(b) {
+    return Array.prototype.find.call(b.children, function (c) { return c.classList.contains('wl'); }) || null;
+  }
+
+  function wordListKind(mark) {
+    return mark.dataset.lk || (/[\p{N}\p{L}]/u.test(mark.textContent) ? 'ol' : 'ul');
+  }
+
+  /** Párrafos de lista de Word de la selección. Con solo el cursor, toda su lista. */
+  function selectedWordList() {
+    const blocks = selectedBlocks().filter(wordMark);
+    if (blocks.length !== 1 || !savedRange.collapsed) return blocks;
+    const b = blocks[0], ln = wordMark(b).dataset.ln;
+    const same = function (el) {
+      const m = el && el.nodeType === 1 && el.tagName !== 'TABLE' ? wordMark(el) : null;
+      return m && m.dataset.ln === ln;
+    };
+    const out = [b];
+    for (let e = b.previousElementSibling; same(e); e = e.previousElementSibling) out.unshift(e);
+    for (let e = b.nextElementSibling; same(e); e = e.nextElementSibling) out.push(e);
+    return out;
+  }
+
+  function removeWordList(blocks) {
+    keepingSelection(function () {
+      blocks.forEach(function (b) {
+        wordMark(b).remove();
+        b.dataset.nonum = '1';
+        b.setAttribute('data-d', '1');
+      });
+    });
+  }
+
+  function convertWordList(blocks, kind, style) {
+    keepingSelection(function () {
+      let list = null, last = null;
+      blocks.forEach(function (b) {
+        const mark = wordMark(b);
+        const li = document.createElement('li');
+        ['data-b', 'data-anchor'].forEach(function (a) { if (b.hasAttribute(a)) li.setAttribute(a, b.getAttribute(a)); });
+        if (mark.dataset.lv && mark.dataset.lv !== '0') li.dataset.lv = mark.dataset.lv;
+        if (b.style.textAlign) li.style.textAlign = b.style.textAlign;
+        mark.remove();
+        while (b.firstChild) li.appendChild(b.firstChild);
+        if (!list || last !== b.previousElementSibling) {
+          list = document.createElement(kind);
+          if (style) list.style.listStyleType = style;
+          b.parentNode.insertBefore(list, b);
+        }
+        list.appendChild(li);
+        last = list;
+        b.remove();
+      });
+    });
   }
 
   /** execCommand solo conoce 7 tamaños: se usa el 7 como marca y se reemplaza por el tamaño real. */
@@ -1406,6 +1529,12 @@
     try { return document.queryCommandValue(cmd) || ''; } catch (e) { return ''; }
   }
 
+  function wordKindAt(el) {
+    const b = el && blockOf(el);
+    const mark = b && wordMark(b);
+    return mark ? wordListKind(mark) : null;
+  }
+
   function report() {
     reportQueued = false;
     const el = anchorElement();
@@ -1426,8 +1555,8 @@
       color: value('foreColor'),
       back: el ? backgroundAt(el) : '',
       align: state('justifyCenter') ? 'center' : state('justifyRight') ? 'right' : state('justifyFull') ? 'justify' : 'left',
-      ul: state('insertUnorderedList'),
-      ol: state('insertOrderedList'),
+      ul: state('insertUnorderedList') || wordKindAt(el) === 'ul',
+      ol: state('insertOrderedList') || wordKindAt(el) === 'ol',
       hasSelection: sel.rangeCount > 0 && !sel.isCollapsed && ed.contains(sel.getRangeAt(0).commonAncestorContainer),
       hf: hfLive ? hfLive.dataset.kind : null,
       hfFirst: hfOptions().tp,
@@ -2445,7 +2574,30 @@
   // ---------- API para Kotlin ----------
 
   window.editor = {
-    cmd: function (name, val) { exec(name, val); afterCommand(); },
+    cmd: function (name, val) {
+      restoreRange();
+      const isList = name === 'insertUnorderedList' || name === 'insertOrderedList';
+      const isAlign = /^justify/.test(name);
+      if (isList || isAlign) {
+        const word = isList ? selectedWordList() : selectedBlocks().filter(wordMark);
+        if (word.length) {
+          if (typingTimer) snapshot();
+          if (isAlign) {
+            // El número no editable de la lista hace que justify* rompa el párrafo
+            const where = { justifyLeft: 'left', justifyCenter: 'center', justifyRight: 'right', justifyFull: 'justify' }[name];
+            selectedBlocks().forEach(function (b) { b.style.textAlign = where; });
+          } else {
+            const kind = name === 'insertOrderedList' ? 'ol' : 'ul';
+            if (wordListKind(wordMark(word[0])) === kind) removeWordList(word);
+            else convertWordList(word, kind, null);
+          }
+          afterCommand();
+          return;
+        }
+      }
+      exec(name, val);
+      afterCommand();
+    },
     block: function (tag) {
       // formatBlock crea un elemento nuevo: se le pasa el origen en Word del párrafo que reemplaza
       const before = blockOf(savedRange ? savedRange.startContainer : anchorElement());
@@ -2477,9 +2629,33 @@
       afterCommand();
     },
     clear: function () {
+      if (typingTimer) snapshot();
+      restoreRange();
+      // removeFormat también borra el aspecto del párrafo, que es el de su estilo: se conserva
+      const LOOK = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'color', 'textDecoration'];
+      const looks = selectedBlocks().map(function (b) {
+        return { b: b, s: LOOK.map(function (p) { return b.style[p]; }) };
+      });
       exec('removeFormat');
       exec('hiliteColor', CLEAR_COLOR);
       clearMarked('backgroundColor');
+      looks.forEach(function (x) {
+        if (!ed.contains(x.b)) return;
+        LOOK.forEach(function (p, i) { if (x.s[i] && !x.b.style[p]) x.b.style[p] = x.s[i]; });
+      });
+      // El texto limpiado ya no hereda nada de su trozo original de Word, tampoco fuente ni tamaño
+      const sel = window.getSelection();
+      if (sel.rangeCount && !sel.isCollapsed) {
+        const r = sel.getRangeAt(0);
+        ed.querySelectorAll('[data-r]').forEach(function (s) {
+          const whole = document.createRange();
+          whole.selectNodeContents(s);
+          if (r.compareBoundaryPoints(Range.START_TO_START, whole) <= 0 && r.compareBoundaryPoints(Range.END_TO_END, whole) >= 0 &&
+              s.textContent && !s.classList.contains('wh')) {
+            s.removeAttribute('data-r');
+          }
+        });
+      }
       afterCommand();
     },
     insertImage: function (src) {
@@ -2514,7 +2690,23 @@
       afterCommand();
     },
     insertPageBreak: function () {
-      exec('insertHTML', '<span class="wpb" data-pb="1" contenteditable="false"></span>');
+      // Con un rango propio: insertHTML de Chrome al final de un párrafo lo deja fuera de él
+      if (typingTimer) snapshot();
+      restoreRange();
+      const sel = window.getSelection();
+      if (!sel.rangeCount || !ed.contains(sel.getRangeAt(0).startContainer)) return;
+      const r = sel.getRangeAt(0);
+      r.deleteContents();
+      const pb = document.createElement('span');
+      pb.className = 'wpb';
+      pb.dataset.pb = '1';
+      pb.setAttribute('contenteditable', 'false');
+      r.insertNode(pb);
+      r.setStartAfter(pb);
+      r.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(r);
+      savedRange = r.cloneRange();
       afterCommand();
     },
     insertRule: function () {
@@ -2548,6 +2740,13 @@
     /** Lista con viñeta o numeración de un tipo (list-style-type). */
     list: function (kind, style) {
       restoreRange();
+      const word = selectedWordList();
+      if (word.length) {
+        if (typingTimer) snapshot();
+        convertWordList(word, kind, style);
+        afterCommand();
+        return;
+      }
       let el = anchorElement();
       let list = el && el.closest('ul,ol');
       if (!list || list.tagName.toLowerCase() !== kind) {

@@ -143,6 +143,30 @@ fn paragraph_spacing_lists_and_quote() {
 }
 
 #[test]
+fn word_list_can_be_removed_or_changed_from_editor() {
+    let dir = tmp("wordlist");
+    let source = dir.join("source.docx");
+    let lists = r##"{"blocks":[
+        {"p":{"tag":"li","list":"ul","list_id":1,"segs":[{"t":"uno"}]}},
+        {"p":{"tag":"li","list":"ul","list_id":1,"segs":[{"t":"dos"}]}}]}"##;
+    wordbridge::to_docx("", "docx", lists, dir.to_str().unwrap(), source.to_str().unwrap()).unwrap();
+    let html = wordbridge::to_html(source.to_str().unwrap(), "docx", dir.to_str().unwrap()).unwrap();
+    assert!(html.contains("data-lk=\"ul\""));
+
+    // Al primero se le quita la lista; el segundo pasa a numeración
+    let model = r##"{"blocks":[
+        {"p":{"src":"0","tag":"p","nonum":true,"segs":[{"t":"uno","r":"0#0"}]}},
+        {"p":{"src":"1","tag":"li","list":"ol","list_style":"decimal","list_id":1,"segs":[{"t":"dos","r":"1#0"}]}}]}"##;
+    let out = dir.join("out.docx");
+    wordbridge::to_docx(source.to_str().unwrap(), "docx", model, dir.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+    let doc = wordbridge::open(out.to_str().unwrap(), "docx").unwrap();
+    let num = |i: usize| doc.styles.resolve_para(&doc.body[i].as_para().unwrap().props).numbering.filter(|n| n.num != 0);
+    assert!(num(0).is_none());
+    let n = num(1).expect("numeración");
+    assert_eq!(format!("{:?}", doc.numbering.level(n.num, 0).unwrap().format), "Decimal");
+}
+
+#[test]
 fn resized_original_image_keeps_new_size() {
     let dir = tmp("img");
     let out = dir.join("out.docx");
