@@ -113,7 +113,10 @@ import androidx.compose.material.icons.automirrored.filled.FormatAlignRight
 import androidx.compose.material.icons.automirrored.filled.FormatIndentDecrease
 import androidx.compose.material.icons.automirrored.filled.FormatIndentIncrease
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
+import androidx.compose.material.icons.automirrored.filled.ListAlt
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.AddComment
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.BorderColor
@@ -174,7 +177,6 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.estudia.app.data.ColorKind
-import com.estudia.app.data.DocType
 import com.estudia.app.rich.cssColor
 import com.estudia.app.ui.components.ColorPickerDialog
 import com.estudia.app.ui.components.FastScrollbar
@@ -193,8 +195,6 @@ import com.estudia.app.ui.notes.NotesIndexSheet
 import com.estudia.app.ui.notes.PlacingBanner
 import com.estudia.app.ui.notes.noteTint
 import com.estudia.app.ui.notes.rememberNoteIconUris
-import com.estudia.app.ui.pdf.AddNoteFab
-import com.estudia.app.ui.pdf.NotesIndexButton
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -308,12 +308,8 @@ fun EditorScreen(
         if (webReady > 0) editor.callRaw(if (placing) "notes.startPlacing()" else "notes.cancelPlacing()")
     }
 
-    // Las notas y los documentos recién creados se abren para escribir; los importados, en modo lectura
-    var editing by rememberSaveable { mutableStateOf<Boolean?>(null) }
-    LaunchedEffect(doc?.type) {
-        val type = doc?.type ?: return@LaunchedEffect
-        if (editing == null) editing = type == DocType.NOTE || vm.isNew
-    }
+    // Todo documento se abre listo para editar; el modo lectura está en el menú
+    var editing by rememberSaveable { mutableStateOf(true) }
     // Vista de página (como Word) si el documento trae tamaño de hoja
     var pageView by rememberSaveable { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(content != null) {
@@ -329,7 +325,7 @@ fun EditorScreen(
     var found by remember { mutableStateOf(0 to 0) }
     var stats by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    LaunchedEffect(editing) { if (editing != true && finding) { finding = false; editor.call("finder.clear") } }
+    LaunchedEffect(editing) { if (!editing && finding) { finding = false; editor.call("finder.clear") } }
     stats?.let { raw -> WordCountDialog(raw) { stats = null } }
 
     // Guardar / compartir como Word: primero se vacía lo pendiente del editor
@@ -378,7 +374,7 @@ fun EditorScreen(
     // Encabezado ("h") y pie ("f"): se editan en la hoja; "n": cuadro del número de página
     var pageNumber by remember { mutableStateOf<HeadersState?>(null) }
     fun openHeaders(kind: String) {
-        if (editing != true) return
+        if (!editing) return
         if (kind == "n") {
             editor.eval("headerFooter.get()") { raw ->
                 pageNumber = runCatching { Json { ignoreUnknownKeys = true }.decodeFromString(HeadersState.serializer(), raw) }.getOrNull()
@@ -431,9 +427,8 @@ fun EditorScreen(
     }
 
     LaunchedEffect(editing) {
-        val e = editing ?: return@LaunchedEffect
-        editor.call("editor.setReadOnly", !e)
-        if (!e) editor.view?.let { v ->
+        editor.call("editor.setReadOnly", !editing)
+        if (!editing) editor.view?.let { v ->
             (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
                 .hideSoftInputFromWindow(v.windowToken, 0)
         }
@@ -444,8 +439,12 @@ fun EditorScreen(
     val toolbarOnTop = (context.applicationContext as EstudiaApp).settings.toolbarPosition == ToolbarPosition.TOP
     val toolbars: @Composable () -> Unit = {
         when {
-            editing == true -> FormattingToolbar(
+            editing -> FormattingToolbar(
                 format = format,
+                noteCount = notes.size,
+                placingNote = placing,
+                onAddNote = { placing = !placing },
+                onNotesIndex = { indexOpen = true },
                 quickHighlight = quickHighlight,
                 recentHighlights = recentHighlights,
                 editor = editor,
@@ -469,14 +468,22 @@ fun EditorScreen(
                     gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 },
             )
-            format.hasSelection -> HighlightBar(
-                colors = (recentHighlights + HIGHLIGHT_PRESETS).distinct().take(8),
-                onHighlight = ::highlight,
-                onPick = { picker = ColorKind.HIGHLIGHT },
-                onRemove = { highlight(null) },
-            )
+            else -> {
+                if (format.hasSelection) {
+                    HighlightBar(
+                        colors = (recentHighlights + HIGHLIGHT_PRESETS).distinct().take(8),
+                        onHighlight = ::highlight,
+                        onPick = { picker = ColorKind.HIGHLIGHT },
+                        onRemove = { highlight(null) },
+                    )
+                }
+                // En modo lectura también se pueden agregar y buscar notas
+                RibbonBar(tabs = { RibbonTabButton("Notas", selected = true) {} }) {
+                    NotesTools(notes.size, placing, onAdd = { placing = !placing }, onIndex = { indexOpen = true })
+                }
+            }
         }
-        if (finding && editing == true) {
+        if (finding && editing) {
             FindBar(
                 found = found,
                 onSearch = { editor.call("finder.search", it) },
@@ -515,22 +522,22 @@ fun EditorScreen(
                     IconButton(onClick = ::exit) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") }
                 },
                 actions = {
-                    NotesIndexButton(notes.size) { indexOpen = true }
                     IconButton(onClick = { editor.call("editor.undo") }, enabled = format.canUndo) {
                         Icon(Icons.AutoMirrored.Filled.Undo, "Deshacer")
                     }
                     IconButton(onClick = { editor.call("editor.redo") }, enabled = format.canRedo) {
                         Icon(Icons.AutoMirrored.Filled.Redo, "Rehacer")
                     }
-                    IconButton(onClick = { editing = editing != true }) {
-                        Icon(
-                            if (editing == true) Icons.AutoMirrored.Filled.MenuBook else Icons.Default.Edit,
-                            contentDescription = if (editing == true) "Modo lectura" else "Editar",
-                        )
-                    }
                     Box {
                         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(
+                                text = { Text(if (editing) "Ir a modo lectura" else "Ir a modo edición") },
+                                leadingIcon = {
+                                    Icon(if (editing) Icons.AutoMirrored.Filled.MenuBook else Icons.Default.Edit, null)
+                                },
+                                onClick = { menu = false; editing = !editing },
+                            )
                             DropdownMenuItem(
                                 text = { Text(if (pageView == true) "Vista móvil (ajustar texto)" else "Vista de página") },
                                 onClick = { menu = false; pageView = pageView != true },
@@ -566,18 +573,15 @@ fun EditorScreen(
             if (toolbarOnTop) toolbars()
             }
         },
-        floatingActionButton = {
-            if (!placing && content != null && !format.hasSelection && format.hf == null) AddNoteFab { placing = true }
-        },
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             val initial = content
             when {
                 error != null -> Text(error!!, Modifier.align(Alignment.Center).padding(24.dp))
-                initial == null || editing == null || pageView == null ->
+                initial == null || pageView == null ->
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
                 else -> {
-                    val startReadOnly = editing != true
+                    val startReadOnly = !editing
                     val startPaged = pageView == true
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
@@ -840,6 +844,11 @@ internal fun FormattingToolbar(
     onLogo: (() -> Unit)? = null,
     /** Encabezado ("h"), pie ("f") o número de página ("n"); solo en documentos. */
     onHeaderFooter: ((String) -> Unit)? = null,
+    /** Pestaña Notas; solo en documentos. */
+    noteCount: Int = 0,
+    placingNote: Boolean = false,
+    onAddNote: (() -> Unit)? = null,
+    onNotesIndex: (() -> Unit)? = null,
 ) {
     // Cinta como la de Word: pestañas arriba y sus herramientas debajo
     var tab by rememberSaveable { mutableStateOf(RibbonTab.HOME) }
@@ -848,6 +857,7 @@ internal fun FormattingToolbar(
         when (it) {
             RibbonTab.REVIEW -> (onFind != null || onStats != null) && format.hf == null
             RibbonTab.LAYOUT -> onLayoutChange != null && format.hf == null
+            RibbonTab.NOTES -> onAddNote != null && onNotesIndex != null && format.hf == null
             RibbonTab.HEADER -> format.hf != null
             RibbonTab.IMAGE -> image != null
             RibbonTab.TABLE -> format.table != null
@@ -868,6 +878,32 @@ internal fun FormattingToolbar(
         if (format.hf != null) tab = RibbonTab.HEADER
         else if (tab == RibbonTab.HEADER) tab = RibbonTab.HOME
     }
+    RibbonBar(tabs = { tabs.forEach { t -> RibbonTabButton(t.label, selected = t == tab) { tab = t } } }) {
+        when (tab) {
+            RibbonTab.HOME -> HomeTools(format, quickHighlight, recentHighlights, editor, onHighlight, onPick)
+            RibbonTab.INSERT -> InsertTools(editor, onInsertImage, onHeaderFooter, inHeader = format.hf != null)
+            RibbonTab.HEADER -> HeaderTools(format, editor, docTitle, onPageNumber = { onHeaderFooter?.invoke("n") }, onLogo = onLogo)
+            RibbonTab.PARAGRAPH -> ParagraphTools(format, editor)
+            RibbonTab.IMAGE -> if (image != null) ImageTools(image, editor, onReplaceImage)
+            RibbonTab.TABLE -> format.table?.let { TableTools(it, editor) }
+            RibbonTab.LAYOUT -> LayoutTools(format.page) { p ->
+                editor.call("editor.setPage", p.w, p.h, p.mt, p.mr, p.mb, p.ml)
+                onLayoutChange?.invoke()
+            }
+            RibbonTab.REVIEW -> {
+                onFind?.let { RibbonButton(Icons.Default.FindReplace, "Buscar y reemplazar", it) }
+                onStats?.let { RibbonButton(Icons.Default.Numbers, "Contar palabras", it) }
+            }
+            RibbonTab.NOTES -> if (onAddNote != null && onNotesIndex != null) {
+                NotesTools(noteCount, placingNote, onAddNote, onNotesIndex)
+            }
+        }
+    }
+}
+
+/** Cinta como la de Word: pestañas arriba y sus herramientas debajo. */
+@Composable
+private fun RibbonBar(tabs: @Composable () -> Unit, tools: @Composable () -> Unit) {
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Column {
             Row(
@@ -876,7 +912,7 @@ internal fun FormattingToolbar(
                     .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 4.dp),
             ) {
-                tabs.forEach { t -> RibbonTabButton(t.label, selected = t == tab) { tab = t } }
+                tabs()
             }
             HorizontalDivider()
             Row(
@@ -886,25 +922,17 @@ internal fun FormattingToolbar(
                     .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                when (tab) {
-                    RibbonTab.HOME -> HomeTools(format, quickHighlight, recentHighlights, editor, onHighlight, onPick)
-                    RibbonTab.INSERT -> InsertTools(editor, onInsertImage, onHeaderFooter, inHeader = format.hf != null)
-                    RibbonTab.HEADER -> HeaderTools(format, editor, docTitle, onPageNumber = { onHeaderFooter?.invoke("n") }, onLogo = onLogo)
-                    RibbonTab.PARAGRAPH -> ParagraphTools(format, editor)
-                    RibbonTab.IMAGE -> if (image != null) ImageTools(image, editor, onReplaceImage)
-                    RibbonTab.TABLE -> format.table?.let { TableTools(it, editor) }
-                    RibbonTab.LAYOUT -> LayoutTools(format.page) { p ->
-                        editor.call("editor.setPage", p.w, p.h, p.mt, p.mr, p.mb, p.ml)
-                        onLayoutChange?.invoke()
-                    }
-                    RibbonTab.REVIEW -> {
-                        onFind?.let { RibbonButton(Icons.Default.FindReplace, "Buscar y reemplazar", it) }
-                        onStats?.let { RibbonButton(Icons.Default.Numbers, "Contar palabras", it) }
-                    }
-                }
+                tools()
             }
         }
     }
+}
+
+/** Notas: agregar una (volver a tocar cancela) y abrir el índice. */
+@Composable
+private fun NotesTools(count: Int, placing: Boolean, onAdd: () -> Unit, onIndex: () -> Unit) {
+    RibbonButton(Icons.Default.AddComment, "Agregar nota", selected = placing, onClick = onAdd)
+    RibbonButton(Icons.AutoMirrored.Filled.ListAlt, if (count > 0) "Índice ($count)" else "Índice", onIndex)
 }
 
 private enum class RibbonTab(val label: String) {
@@ -913,6 +941,7 @@ private enum class RibbonTab(val label: String) {
     PARAGRAPH("Párrafo"),
     LAYOUT("Diseño"),
     REVIEW("Revisar"),
+    NOTES("Notas"),
     IMAGE("Imagen"),
     TABLE("Tabla"),
     HEADER("Encabezado y pie"),
@@ -1380,14 +1409,23 @@ private fun InsertTools(
 /** Botón con icono y nombre debajo, como en la cinta de Word. */
 @Composable
 private fun RibbonButton(icon: ImageVector, label: String, onClick: () -> Unit) {
+    RibbonButton(icon, label, selected = false, onClick = onClick)
+}
+
+/** Botón de la cinta que puede quedar marcado. */
+@Composable
+private fun RibbonButton(icon: ImageVector, label: String, selected: Boolean, onClick: () -> Unit) {
+    val c = MaterialTheme.colorScheme
+    val tint = if (selected) c.onPrimaryContainer else LocalContentColor.current
     Column(
         Modifier
             .clickable(onClick = onClick)
+            .background(if (selected) c.primaryContainer else Color.Transparent, RoundedCornerShape(8.dp))
             .padding(horizontal = 8.dp, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(icon, null, modifier = Modifier.size(22.dp))
-        Text(label, fontSize = 11.sp, maxLines = 1)
+        Icon(icon, null, tint = tint, modifier = Modifier.size(22.dp))
+        Text(label, color = tint, fontSize = 11.sp, maxLines = 1)
     }
 }
 

@@ -132,8 +132,6 @@ class EditorViewModel(app: Application, savedState: SavedStateHandle) : AndroidV
     val content: StateFlow<EditorContent?> = _content
 
     val error = MutableStateFlow<String?>(null)
-    /** Documento en blanco recién creado: se abre listo para escribir. */
-    val isNew: Boolean = repo.consumeNewDocument(docId)
     val state = MutableStateFlow(EditorState())
 
     val recentHighlights = repo.recentColors.recent(ColorKind.HIGHLIGHT)

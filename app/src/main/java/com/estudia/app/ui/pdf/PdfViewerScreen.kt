@@ -15,11 +15,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.automirrored.filled.ListAlt
 import androidx.compose.material.icons.filled.AddComment
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.runtime.key
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
@@ -62,7 +61,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Redo
@@ -417,6 +415,17 @@ fun PdfViewerScreen(
         optionsOpen = t.hasOptions && (t != tool || !optionsOpen)
         tool = t
     }
+    val toolbar: @Composable (Boolean) -> Unit = { atBottom ->
+        PdfToolbar(
+            tool = tool,
+            penColor = penColor,
+            highlightColor = highlightColor,
+            noteCount = notes.size,
+            atBottom = atBottom,
+            onTool = ::selectTool,
+            onNotesIndex = { indexOpen = true },
+        )
+    }
 
     val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
         uri?.let(vm::exportTo)
@@ -431,9 +440,7 @@ fun PdfViewerScreen(
 
     Scaffold(
         bottomBar = {
-            if (!toolbarOnTop && ratios != null) {
-                PdfToolbar(tool, penColor, highlightColor, atBottom = true, onTool = ::selectTool)
-            }
+            if (!toolbarOnTop && ratios != null) toolbar(true)
         },
         topBar = {
             // Herramientas justo debajo de la barra superior, salvo que en Ajustes se pidan abajo
@@ -446,7 +453,6 @@ fun PdfViewerScreen(
                 actions = {
                     IconButton(onClick = vm::undo, enabled = canUndo) { Icon(Icons.AutoMirrored.Filled.Undo, "Deshacer") }
                     IconButton(onClick = vm::redo, enabled = canRedo) { Icon(Icons.AutoMirrored.Filled.Redo, "Rehacer") }
-                    NotesIndexButton(notes.size) { indexOpen = true }
                     Box {
                         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -473,9 +479,7 @@ fun PdfViewerScreen(
                 },
                 colors = appBarColors(),
             )
-            if (toolbarOnTop && ratios != null) {
-                PdfToolbar(tool, penColor, highlightColor, atBottom = false, onTool = ::selectTool)
-            }
+            if (toolbarOnTop && ratios != null) toolbar(false)
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -870,25 +874,6 @@ private fun PageNoteMarker(
     )
 }
 
-/** Botón del índice de notas, con la cantidad. */
-@Composable
-internal fun NotesIndexButton(count: Int, onClick: () -> Unit) {
-    IconButton(onClick = onClick) {
-        BadgedBox(badge = { if (count > 0) Badge { Text("$count") } }) {
-            Icon(Icons.AutoMirrored.Filled.ListAlt, "Índice de notas")
-        }
-    }
-}
-
-@Composable
-internal fun AddNoteFab(onClick: () -> Unit) {
-    ExtendedFloatingActionButton(
-        onClick = onClick,
-        icon = { Icon(Icons.Default.AddComment, null) },
-        text = { Text("Nota") },
-    )
-}
-
 /** Lápiz: opaco. Destacador: en modo multiplicar, así el texto negro sigue viéndose negro. */
 private fun DrawScope.drawHighlight(stroke: PdfStroke) {
     val pts = stroke.points
@@ -934,7 +919,15 @@ private fun hits(stroke: PdfStroke, p: Offset, w: Float, h: Float, margin: Float
 
 /** Barra de herramientas del PDF; va arriba o abajo según los ajustes. */
 @Composable
-private fun PdfToolbar(tool: Tool, penColor: Int, highlightColor: Int, atBottom: Boolean, onTool: (Tool) -> Unit) {
+private fun PdfToolbar(
+    tool: Tool,
+    penColor: Int,
+    highlightColor: Int,
+    noteCount: Int,
+    atBottom: Boolean,
+    onTool: (Tool) -> Unit,
+    onNotesIndex: () -> Unit,
+) {
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Row(
             Modifier
@@ -942,59 +935,75 @@ private fun PdfToolbar(tool: Tool, penColor: Int, highlightColor: Int, atBottom:
                 .then(if (atBottom) Modifier.navigationBarsPadding() else Modifier)
         ) {
             Tool.entries.forEach { t ->
-                val selected = t == tool
-                Column(
+                ToolbarItem(
+                    icon = when (t) {
+                        Tool.HAND -> Icons.Default.PanTool
+                        Tool.PEN -> Icons.Default.Edit
+                        Tool.HIGHLIGHT -> Icons.Default.BorderColor
+                        Tool.ERASER -> EraserIcon
+                        Tool.NOTE -> Icons.Default.AddComment
+                    },
+                    label = t.label,
+                    selected = t == tool,
+                    // Color actual de la herramienta
+                    dot = when (t) {
+                        Tool.PEN -> penColor
+                        Tool.HIGHLIGHT -> highlightColor
+                        else -> null
+                    },
+                    onClick = { onTool(t) },
+                )
+            }
+            ToolbarItem(
+                icon = Icons.AutoMirrored.Filled.ListAlt,
+                label = if (noteCount > 0) "Índice ($noteCount)" else "Índice",
+                selected = false,
+                dot = null,
+                onClick = onNotesIndex,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RowScope.ToolbarItem(icon: ImageVector, label: String, selected: Boolean, dot: Int?, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .weight(1f)
+            .clickable(onClick = onClick)
+            .padding(top = 6.dp, bottom = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        val c = MaterialTheme.colorScheme
+        Box(
+            Modifier
+                .size(width = 48.dp, height = 28.dp)
+                .background(if (selected) c.primaryContainer else ComposeColor.Transparent, RoundedCornerShape(14.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = if (selected) c.onPrimaryContainer else c.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+            if (dot != null) {
+                Box(
                     Modifier
-                        .weight(1f)
-                        .clickable { onTool(t) }
-                        .padding(top = 6.dp, bottom = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    val c = MaterialTheme.colorScheme
-                    Box(
-                        Modifier
-                            .size(width = 48.dp, height = 28.dp)
-                            .background(if (selected) c.primaryContainer else ComposeColor.Transparent, RoundedCornerShape(14.dp)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            when (t) {
-                                Tool.HAND -> Icons.Default.PanTool
-                                Tool.PEN -> Icons.Default.Edit
-                                Tool.HIGHLIGHT -> Icons.Default.BorderColor
-                                Tool.ERASER -> EraserIcon
-                                Tool.NOTE -> Icons.Default.AddComment
-                            },
-                            contentDescription = null,
-                            tint = if (selected) c.onPrimaryContainer else c.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp),
-                        )
-                        // Color actual de la herramienta
-                        val dot = when (t) {
-                            Tool.PEN -> penColor
-                            Tool.HIGHLIGHT -> highlightColor
-                            else -> null
-                        }
-                        if (dot != null) {
-                            Box(
-                                Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(top = 2.dp, end = 8.dp)
-                                    .size(9.dp)
-                                    .background(ComposeColor(dot), CircleShape)
-                            )
-                        }
-                    }
-                    Text(
-                        t.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (selected) c.onSurface else c.onSurfaceVariant,
-                        maxLines = 1,
-                    )
-                }
+                        .align(Alignment.TopEnd)
+                        .padding(top = 2.dp, end = 8.dp)
+                        .size(9.dp)
+                        .background(ComposeColor(dot), CircleShape)
+                )
             }
         }
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (selected) c.onSurface else c.onSurfaceVariant,
+            maxLines = 1,
+        )
     }
 }
 

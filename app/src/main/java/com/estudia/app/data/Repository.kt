@@ -147,13 +147,8 @@ class Repository(private val context: Context, private val db: AppDatabase) {
             tmp.deleteRecursively()
             throw e
         }
-        store(title, DocType.DOCX, folderId, original, tmp, html).also { newDocuments += it }
+        store(title, DocType.DOCX, folderId, original, tmp, html)
     }
-
-    private val newDocuments = java.util.Collections.synchronizedSet(HashSet<Long>())
-
-    /** true la primera vez que se pregunta por un documento recién creado. */
-    fun consumeNewDocument(id: Long): Boolean = newDocuments.remove(id)
 
     private fun convert(type: DocType, file: File, dir: File): String? = when (type) {
         DocType.PDF -> null
