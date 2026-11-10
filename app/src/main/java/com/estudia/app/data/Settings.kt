@@ -51,6 +51,15 @@ class Settings(context: Context) {
         prefs.edit().putFloat(KEY_PEN_WIDTH, value).apply()
     }
 
+    /** cuanto suaviza el pulso el lapiz de PDF, de 0 a 1 */
+    var penStabilizer by mutableFloatStateOf(prefs.getFloat(KEY_PEN_STABILIZER, 0.4f))
+        private set
+
+    fun updatePenStabilizer(value: Float) {
+        penStabilizer = value
+        prefs.edit().putFloat(KEY_PEN_STABILIZER, value).apply()
+    }
+
     /** El destacador de PDF marca en línea recta (si no, a mano alzada). */
     var highlighterStraight by mutableStateOf(prefs.getBoolean(KEY_HL_STRAIGHT, true))
         private set
@@ -91,6 +100,7 @@ class Settings(context: Context) {
         const val KEY_THEME = "theme"
         const val KEY_TOOLBAR = "toolbar_position"
         const val KEY_PEN_WIDTH = "pen_width"
+        const val KEY_PEN_STABILIZER = "pen_stabilizer"
         const val KEY_HL_STRAIGHT = "highlighter_straight"
         const val KEY_HL_WIDTH = "highlighter_width"
         const val KEY_HL_OPACITY = "highlighter_opacity"

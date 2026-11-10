@@ -100,6 +100,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.neverEqualPolicy
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -135,6 +136,9 @@ import com.estudia.app.EstudiaApp
 import com.estudia.app.data.ColorKind
 import com.estudia.app.data.DocumentEntity
 import com.estudia.app.data.PdfStroke
+import com.estudia.app.data.PenInput
+import com.estudia.app.data.smoothCurves
+import com.estudia.app.data.widthSegments
 import com.estudia.app.data.ToolbarPosition
 import com.estudia.app.ui.components.ColorPickerDialog
 import com.estudia.app.ui.components.FastScrollbar
@@ -538,6 +542,7 @@ fun PdfViewerScreen(
                                     strokeWidth = if (tool == Tool.PEN) settings.penWidth else settings.highlighterWidth,
                                     strokeAlpha = if (tool == Tool.PEN) 1f else settings.highlighterOpacity,
                                     straightLine = tool == Tool.HIGHLIGHT && settings.highlighterStraight,
+                                    stabilizer = if (tool == Tool.PEN) settings.penStabilizer else 0f,
                                     onDrawStart = { optionsOpen = false },
                                     notes = notesByPage[index].orEmpty(),
                                     pulse = pulse,
@@ -635,6 +640,8 @@ fun PdfViewerScreen(
                                 widthRange = MIN_PEN_WIDTH..MAX_PEN_WIDTH,
                                 onWidth = settings::updatePenWidth,
                                 modifier = panelModifier,
+                                stabilizer = settings.penStabilizer,
+                                onStabilizer = settings::updatePenStabilizer,
                             )
                         } else {
                             ToolOptions(
@@ -728,6 +735,7 @@ private fun PdfPage(
     strokeWidth: Float,
     strokeAlpha: Float,
     straightLine: Boolean,
+    stabilizer: Float,
     onDrawStart: () -> Unit,
     notes: List<StickyNoteEntity>,
     pulse: Pair<Long, Long>?,
@@ -736,9 +744,12 @@ private fun PdfPage(
     onNoteMoved: (StickyNoteEntity, Float, Float) -> Unit,
 ) {
     val bitmap by produceState<Bitmap?>(null, index, widthPx) { value = vm.render(index, widthPx) }
-    var current by remember { mutableStateOf<PdfStroke?>(null) }
+    // el trazo en curso comparte su lista de puntos, por eso cada cambio debe contar como nuevo
+    var current by remember { mutableStateOf<PdfStroke?>(null, neverEqualPolicy()) }
     val latestStrokes by rememberUpdatedState(strokes)
     val eraseRadius = with(LocalDensity.current) { 14.dp.toPx() }
+    val pxPerDp = LocalDensity.current.density
+    val minPointGap = 0.75f * pxPerDp
     var pageSize by remember { mutableStateOf(IntSize.Zero) }
 
     Box(
@@ -756,7 +767,7 @@ private fun PdfPage(
                 modifier = Modifier.fillMaxSize(),
             )
         }
-        val drawModifier = if (!tool.draws) Modifier else Modifier.pointerInput(tool, color, strokeWidth, strokeAlpha, straightLine) {
+        val drawModifier = if (!tool.draws) Modifier else Modifier.pointerInput(tool, color, strokeWidth, strokeAlpha, straightLine, stabilizer) {
             awaitEachGesture {
                 val down = awaitFirstDown()
                 onDrawStart()
@@ -776,25 +787,48 @@ private fun PdfPage(
                 val points = mutableListOf(start.x / w, start.y / h)
                 val straight = straightLine
                 val pen = tool == Tool.PEN
-                current = PdfStroke(index, color, strokeWidth, points.toList(), straight, strokeAlpha, pen)
+                // solo el lapiz cambia de grosor: en el destacador se notarian los tramos encimados
+                val input = PenInput(stabilizer, pxPerDp, start.x, start.y, down.uptimeMillis)
+                val widths = if (pen) mutableListOf(input.width) else mutableListOf()
+                current = PdfStroke(index, color, strokeWidth, points, straight, strokeAlpha, pen, widths)
+                var added = start
+                var latest = start
+                fun add(p: Offset) {
+                    points += p.x.coerceIn(0f, w) / w
+                    points += p.y.coerceIn(0f, h) / h
+                    if (pen) widths += input.width
+                    added = p
+                }
+                fun follow(p: Offset, time: Long) {
+                    input.move(p.x, p.y, time)
+                    val smoothed = Offset(input.x, input.y)
+                    if ((smoothed - added).getDistance() >= minPointGap) add(smoothed)
+                }
                 val completed = drag(down.id) { change ->
-                    val p = change.position
+                    latest = change.position
                     if (straight) {
                         points.clear()
-                        points += listOf(start.x / w, start.y / h, p.x / w, start.y / h)
+                        points += listOf(start.x / w, start.y / h, latest.x / w, start.y / h)
                     } else {
-                        points += listOf(p.x.coerceIn(0f, w) / w, p.y.coerceIn(0f, h) / h)
+                        // el telefono registra mas puntos que cuadros: sin ellos los trazos rapidos salen quebrados
+                        change.historical.forEach { follow(it.position, it.uptimeMillis) }
+                        follow(latest, change.uptimeMillis)
                     }
-                    current = PdfStroke(index, color, strokeWidth, points.toList(), straight, strokeAlpha, pen)
+                    current = current
                     change.consume()
                 }
-                val stroke = current
+                // el punto estabilizado va atras del dedo: al soltar, el trazo llega hasta donde quedo el dedo
+                if (!straight && latest != added) add(latest)
+                val stroke = current?.copy(points = points.toList(), widths = widths.toList())
                 current = null
                 if (completed && stroke != null && (!straight || stroke.points.size >= 4)) vm.addStroke(stroke)
             }
         }
-        Canvas(Modifier.fillMaxSize().then(drawModifier)) {
+        // capa propia: los trazos guardados no se vuelven a dibujar con cada movimiento del dedo
+        Canvas(Modifier.fillMaxSize().graphicsLayer()) {
             strokes.forEach { drawHighlight(it) }
+        }
+        Canvas(Modifier.fillMaxSize().then(drawModifier)) {
             current?.let { drawHighlight(it) }
         }
 
@@ -878,13 +912,29 @@ private fun PageNoteMarker(
 private fun DrawScope.drawHighlight(stroke: PdfStroke) {
     val pts = stroke.points
     if (pts.size < 2) return
+    if (pts.size >= 4 && stroke.widths.size == pts.size / 2) {
+        val color = ComposeColor(stroke.color).copy(alpha = stroke.alpha.coerceIn(0f, 1f))
+        val segments = widthSegments(pts, stroke.widths)
+        for (i in segments.indices step 5) {
+            drawLine(
+                color = color,
+                start = Offset(segments[i] * size.width, segments[i + 1] * size.height),
+                end = Offset(segments[i + 2] * size.width, segments[i + 3] * size.height),
+                strokeWidth = stroke.width * size.width * segments[i + 4],
+                cap = StrokeCap.Round,
+            )
+        }
+        return
+    }
     val path = Path().apply {
         moveTo(pts[0] * size.width, pts[1] * size.height)
         if (pts.size == 2) lineTo(pts[0] * size.width + 0.1f, pts[1] * size.height)
-        var i = 2
-        while (i + 1 < pts.size) {
-            lineTo(pts[i] * size.width, pts[i + 1] * size.height)
-            i += 2
+        val curves = smoothCurves(pts)
+        for (i in curves.indices step 4) {
+            quadraticTo(
+                curves[i] * size.width, curves[i + 1] * size.height,
+                curves[i + 2] * size.width, curves[i + 3] * size.height,
+            )
         }
     }
     drawPath(
@@ -1023,6 +1073,9 @@ private fun ToolOptions(
     onStraight: (Boolean) -> Unit = {},
     opacity: Float? = null,
     onOpacity: (Float) -> Unit = {},
+    /** solo el lapiz estabiliza el pulso */
+    stabilizer: Float? = null,
+    onStabilizer: (Float) -> Unit = {},
 ) {
     Surface(
         shape = MaterialTheme.shapes.medium,
@@ -1077,6 +1130,16 @@ private fun ToolOptions(
                     onChange = onWidth,
                     modifier = Modifier.weight(1f),
                 )
+                if (stabilizer != null) {
+                    LabeledSlider(
+                        label = "Estabilizador",
+                        valueText = "${(stabilizer * 100).roundToInt()}%",
+                        value = stabilizer,
+                        range = 0f..1f,
+                        onChange = onStabilizer,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
                 if (opacity != null) {
                     LabeledSlider(
                         label = "Opacidad",

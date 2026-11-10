@@ -62,6 +62,8 @@ data class PdfStroke(
     val alpha: Float = 1f,
     /** Lápiz: tapa lo que hay debajo. Si no, destacador (los trazos anteriores a esta opción). */
     val pen: Boolean = false,
+    /** factor de grosor por punto del lapiz. Vacio: grosor parejo (los trazos anteriores a esta opcion) */
+    val widths: List<Float> = emptyList(),
 )
 
 class Repository(private val context: Context, private val db: AppDatabase) {

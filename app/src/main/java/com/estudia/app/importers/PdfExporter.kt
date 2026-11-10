@@ -2,6 +2,8 @@ package com.estudia.app.importers
 
 import android.content.Context
 import com.estudia.app.data.PdfStroke
+import com.estudia.app.data.smoothCurves
+import com.estudia.app.data.widthSegments
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
@@ -41,10 +43,34 @@ object PdfExporter {
                         cs.setLineWidth(s.width * displayWidth)
                         cs.setLineCapStyle(if (s.straight) 2 else 1)
                         cs.setLineJoinStyle(1)
-                        val pts = s.points.chunked(2).map { (x, y) -> toPdf(x, y, box, rotation) }
-                        cs.moveTo(pts[0].first, pts[0].second)
-                        if (pts.size == 1) cs.lineTo(pts[0].first, pts[0].second)
-                        for (p in pts.drop(1)) cs.lineTo(p.first, p.second)
+                        if (s.points.size >= 4 && s.widths.size == s.points.size / 2) {
+                            val segments = widthSegments(s.points, s.widths)
+                            for (i in segments.indices step 5) {
+                                val (ax, ay) = toPdf(segments[i], segments[i + 1], box, rotation)
+                                val (bx, by) = toPdf(segments[i + 2], segments[i + 3], box, rotation)
+                                cs.setLineWidth(s.width * displayWidth * segments[i + 4])
+                                cs.moveTo(ax, ay)
+                                cs.lineTo(bx, by)
+                                cs.stroke()
+                            }
+                            continue
+                        }
+                        var (x, y) = toPdf(s.points[0], s.points[1], box, rotation)
+                        cs.moveTo(x, y)
+                        if (s.points.size < 4) cs.lineTo(x, y)
+                        val curves = smoothCurves(s.points)
+                        for (i in curves.indices step 4) {
+                            val (cx, cy) = toPdf(curves[i], curves[i + 1], box, rotation)
+                            val (ex, ey) = toPdf(curves[i + 2], curves[i + 3], box, rotation)
+                            // PDF solo tiene curvas cubicas, esta equivale a la cuadratica de la pantalla
+                            cs.curveTo(
+                                x + (cx - x) * 2 / 3, y + (cy - y) * 2 / 3,
+                                ex + (cx - ex) * 2 / 3, ey + (cy - ey) * 2 / 3,
+                                ex, ey,
+                            )
+                            x = ex
+                            y = ey
+                        }
                         cs.stroke()
                     }
                 }
