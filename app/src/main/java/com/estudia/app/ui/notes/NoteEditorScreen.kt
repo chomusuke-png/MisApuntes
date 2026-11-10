@@ -10,6 +10,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import com.estudia.app.ui.components.HidingTopBar
+import com.estudia.app.ui.components.ShowAppBarButton
+import com.estudia.app.ui.components.rememberAppBarVisibility
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -237,6 +241,7 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
     }
 
     val toolbarOnTop = (context.applicationContext as EstudiaApp).settings.toolbarPosition == ToolbarPosition.TOP
+    val bar = rememberAppBarVisibility()
     val toolbar: @Composable () -> Unit = {
         FormattingToolbar(
             format = format,
@@ -257,17 +262,12 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
         },
         topBar = {
             // Herramientas justo debajo de la barra superior, salvo que en Ajustes se pidan abajo
-            Column {
+            HidingTopBar(bar.visible, appBar = {
             TopAppBar(
+                windowInsets = WindowInsets(0),
                 title = { Text("Nota") },
                 navigationIcon = { IconButton(onClick = ::exit) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") } },
                 actions = {
-                    IconButton(onClick = { editor.call("editor.undo") }, enabled = format.canUndo) {
-                        Icon(Icons.AutoMirrored.Filled.Undo, "Deshacer")
-                    }
-                    IconButton(onClick = { editor.call("editor.redo") }, enabled = format.canRedo) {
-                        Icon(Icons.AutoMirrored.Filled.Redo, "Rehacer")
-                    }
                     Box {
                         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -286,7 +286,8 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
                 },
                 colors = appBarColors(),
             )
-            if (toolbarOnTop) toolbar()
+            }) {
+                if (toolbarOnTop) toolbar()
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -307,6 +308,7 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
                     ),
                     modifier = Modifier.weight(1f).focusRequester(titleFocus),
                 )
+                ShowAppBarButton(bar)
             }
             HorizontalDivider()
             Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -324,7 +326,12 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
                                 readOnly = false,
                                 paged = false,
                                 dark = darkTheme,
-                                bridge = EditorBridge(onSave = vm::save, onState = vm::onState, onRotateImage = vm::rotateImage),
+                                bridge = EditorBridge(
+                                    onSave = vm::save,
+                                    onState = vm::onState,
+                                    onRotateImage = vm::rotateImage,
+                                    onScroll = { y, _ -> bar.scrolledTo(y.toFloat()) },
+                                ),
                             ).also { editor.view = it }
                         },
                         onRelease = { editor.view = null },

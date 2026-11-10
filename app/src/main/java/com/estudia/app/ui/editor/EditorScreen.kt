@@ -96,6 +96,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import com.estudia.app.ui.components.HidingTopBar
+import com.estudia.app.ui.components.ShowAppBarButton
+import com.estudia.app.ui.components.rememberAppBarVisibility
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -437,6 +441,7 @@ fun EditorScreen(
     LaunchedEffect(darkTheme) { editor.call("editor.setDark", darkTheme) }
 
     val toolbarOnTop = (context.applicationContext as EstudiaApp).settings.toolbarPosition == ToolbarPosition.TOP
+    val bar = rememberAppBarVisibility()
     val toolbars: @Composable () -> Unit = {
         when {
             editing -> FormattingToolbar(
@@ -508,8 +513,9 @@ fun EditorScreen(
         },
         topBar = {
             // Herramientas justo debajo de la barra superior, salvo que en Ajustes se pidan abajo
-            Column {
+            HidingTopBar(bar.visible, appBar = {
             TopAppBar(
+                windowInsets = WindowInsets(0),
                 title = {
                     Text(
                         doc?.title.orEmpty(),
@@ -522,12 +528,6 @@ fun EditorScreen(
                     IconButton(onClick = ::exit) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") }
                 },
                 actions = {
-                    IconButton(onClick = { editor.call("editor.undo") }, enabled = format.canUndo) {
-                        Icon(Icons.AutoMirrored.Filled.Undo, "Deshacer")
-                    }
-                    IconButton(onClick = { editor.call("editor.redo") }, enabled = format.canRedo) {
-                        Icon(Icons.AutoMirrored.Filled.Redo, "Rehacer")
-                    }
                     Box {
                         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -570,7 +570,8 @@ fun EditorScreen(
                 },
                 colors = appBarColors(),
             )
-            if (toolbarOnTop) toolbars()
+            }) {
+                if (toolbarOnTop) toolbars()
             }
         },
     ) { padding ->
@@ -599,7 +600,7 @@ fun EditorScreen(
                                     onNoteTap = { openNoteId = it },
                                     onNotePlaced = { placing = false; pendingAnchor = it },
                                     onNoteMoved = vm::moveStickyNote,
-                                    onScroll = { y, max -> vm.onScroll(y); docScroll = y to max },
+                                    onScroll = { y, max -> vm.onScroll(y); docScroll = y to max; bar.scrolledTo(y.toFloat()) },
                                     onModel = vm::saveModel,
                                     onFound = { cur, total -> found = cur to total },
                                     onRotateImage = vm::rotateImage,
@@ -630,6 +631,7 @@ fun EditorScreen(
                 )
             }
             if (placing) PlacingBanner(onCancel = { placing = false }, modifier = Modifier.align(Alignment.TopCenter))
+            ShowAppBarButton(bar, Modifier.align(Alignment.TopStart))
         }
     }
 
@@ -878,7 +880,17 @@ internal fun FormattingToolbar(
         if (format.hf != null) tab = RibbonTab.HEADER
         else if (tab == RibbonTab.HEADER) tab = RibbonTab.HOME
     }
-    RibbonBar(tabs = { tabs.forEach { t -> RibbonTabButton(t.label, selected = t == tab) { tab = t } } }) {
+    RibbonBar(
+        tabs = { tabs.forEach { t -> RibbonTabButton(t.label, selected = t == tab) { tab = t } } },
+        leading = {
+            IconButton(onClick = { editor.call("editor.undo") }, enabled = format.canUndo, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.AutoMirrored.Filled.Undo, "Deshacer", Modifier.size(20.dp))
+            }
+            IconButton(onClick = { editor.call("editor.redo") }, enabled = format.canRedo, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.AutoMirrored.Filled.Redo, "Rehacer", Modifier.size(20.dp))
+            }
+        },
+    ) {
         when (tab) {
             RibbonTab.HOME -> HomeTools(format, quickHighlight, recentHighlights, editor, onHighlight, onPick)
             RibbonTab.INSERT -> InsertTools(editor, onInsertImage, onHeaderFooter, inHeader = format.hf != null)
@@ -901,18 +913,21 @@ internal fun FormattingToolbar(
     }
 }
 
-/** Cinta como la de Word: pestañas arriba y sus herramientas debajo. */
+/** Cinta como la de Word: pestañas arriba y sus herramientas debajo. leading queda fijo junto a las pestañas. */
 @Composable
-private fun RibbonBar(tabs: @Composable () -> Unit, tools: @Composable () -> Unit) {
+private fun RibbonBar(tabs: @Composable () -> Unit, leading: @Composable () -> Unit = {}, tools: @Composable () -> Unit) {
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Column {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 4.dp),
-            ) {
-                tabs()
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                leading()
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 4.dp),
+                ) {
+                    tabs()
+                }
             }
             HorizontalDivider()
             Row(

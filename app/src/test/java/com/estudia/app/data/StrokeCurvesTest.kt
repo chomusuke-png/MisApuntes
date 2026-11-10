@@ -2,6 +2,7 @@ package com.estudia.app.data
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -77,5 +78,112 @@ class StrokeCurvesTest {
         }
         assertTrue(fast.width < 0.6f)
         assertTrue(slow.width > 1.2f)
+    }
+
+    @Test
+    fun withPressureTheWidthIgnoresTheSpeed() {
+        val soft = PenInput(0f, 1f, 0f, 0f, 0, pressure = 0.1f)
+        val hard = PenInput(0f, 1f, 0f, 0f, 0, pressure = 0.9f)
+        assertTrue(soft.width < hard.width)
+        repeat(50) {
+            // apretar fuerte y rapido da un trazo grueso, y suave y lento uno fino
+            hard.move((it + 1) * 24f, 0f, (it + 1) * 8L, 0.9f)
+            soft.move((it + 1) * 0.4f, 0f, (it + 1) * 8L, 0.1f)
+        }
+        assertTrue(hard.width > 1.2f)
+        assertTrue(soft.width < 0.6f)
+    }
+
+    @Test
+    fun aScreenThatAlwaysReportsTheSamePressureIsIgnored() {
+        val range = PressureRange()
+        repeat(20) { assertNull(range.normalize(1f)) }
+        assertNull(range.normalize(0.95f))
+    }
+
+    @Test
+    fun fingerPressureIsScaledToTheRangeSeenOnTheDevice() {
+        val range = PressureRange()
+        assertNull(range.normalize(0.3f))
+        assertEquals(1f, range.normalize(0.5f)!!, 0f)
+        assertEquals(0f, range.normalize(0.3f)!!, 0f)
+        assertEquals(0.5f, range.normalize(0.4f)!!, 0.001f)
+    }
+
+    @Test
+    fun theLearnedRangeSurvivesReopeningTheApp() {
+        val range = PressureRange()
+        range.normalize(0.2f)
+        range.normalize(0.6f)
+        assertEquals(0.5f, PressureRange(range.min, range.max).normalize(0.4f)!!, 0.001f)
+    }
+
+    @Test
+    fun aLoneExtremePressureIsForgottenWithUse() {
+        val range = PressureRange()
+        range.normalize(0.2f)
+        range.normalize(0.4f)
+        range.normalize(1f)
+        range.endStroke()
+        val stretched = range.normalize(0.4f)!!
+        repeat(60) {
+            range.normalize(0.2f)
+            range.normalize(0.4f)
+            range.endStroke()
+        }
+        assertTrue(range.normalize(0.4f)!! > stretched + 0.5f)
+    }
+
+    private val line = PdfStroke(0, 0, 0.01f, listOf(0.1f, 0.5f, 0.9f, 0.5f))
+
+    @Test
+    fun erasingAwayFromTheStrokeLeavesItUntouched() {
+        assertNull(line.erase(50f, 10f, 5f, 100f, 100f))
+    }
+
+    @Test
+    fun erasingTheMiddleSplitsTheStrokeInTwo() {
+        val pieces = line.erase(50f, 50f, 5f, 100f, 100f)!!
+        assertEquals(2, pieces.size)
+        val (left, right) = pieces
+        // el corte queda en el borde del circulo, a 5 px de radio mas medio grosor
+        assertEquals(0.1f, left.points.first(), 0.001f)
+        assertTrue(left.points[left.points.size - 2] in 0.40f..0.445f)
+        assertTrue(right.points.first() in 0.555f..0.60f)
+        assertEquals(0.9f, right.points[right.points.size - 2], 0.001f)
+    }
+
+    @Test
+    fun erasingAnEndShortensTheStroke() {
+        val pieces = line.erase(10f, 50f, 5f, 100f, 100f)!!
+        assertEquals(1, pieces.size)
+        assertTrue(pieces[0].points.first() > 0.15f)
+    }
+
+    @Test
+    fun erasingAllOfItLeavesNothing() {
+        assertEquals(emptyList<PdfStroke>(), line.erase(50f, 50f, 60f, 100f, 100f))
+        val dot = PdfStroke(0, 0, 0.01f, listOf(0.5f, 0.5f))
+        assertEquals(emptyList<PdfStroke>(), dot.erase(50f, 50f, 5f, 100f, 100f))
+    }
+
+    @Test
+    fun piecesKeepTheirLookAndTheirWidths() {
+        val pen = PdfStroke(2, -1, 0.01f, listOf(0.1f, 0.5f, 0.5f, 0.5f, 0.9f, 0.5f), alpha = 0.5f, pen = true, widths = listOf(0.5f, 1f, 1.3f))
+        val pieces = pen.erase(50f, 50f, 5f, 100f, 100f)!!
+        assertEquals(2, pieces.size)
+        pieces.forEach {
+            assertEquals(it.points.size / 2, it.widths.size)
+            assertEquals(pen.copy(points = it.points, widths = it.widths), it)
+        }
+        assertEquals(0.5f, pieces[0].widths.first(), 0f)
+        assertEquals(1.3f, pieces[1].widths.last(), 0f)
+    }
+
+    @Test
+    fun aStraightHighlightStaysStraightAfterErasing() {
+        val pieces = line.copy(straight = true).erase(50f, 50f, 5f, 100f, 100f)!!
+        assertEquals(2, pieces.size)
+        pieces.forEach { assertEquals(4, it.points.size) }
     }
 }

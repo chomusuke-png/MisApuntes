@@ -35,7 +35,22 @@ import com.estudia.app.ui.notes.PlacingBanner
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.offset
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.sp
+import com.estudia.app.data.erase
+import com.estudia.app.ui.components.HidingTopBar
+import com.estudia.app.ui.components.ShowAppBarButton
+import com.estudia.app.ui.components.rememberAppBarVisibility
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
@@ -122,6 +137,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -166,13 +182,13 @@ import androidx.compose.ui.graphics.Color as ComposeColor
 private enum class Tool(val label: String) {
     HAND("Mano"),
     PEN("Lápiz"),
-    HIGHLIGHT("Destacador"),
+    HIGHLIGHT("Destacar"),
     ERASER("Borrador"),
     NOTE("Nota");
 
     /** Un dedo dibuja o borra, así que moverse queda para dos dedos. */
     val draws get() = this == PEN || this == HIGHLIGHT || this == ERASER
-    val hasOptions get() = this == PEN || this == HIGHLIGHT
+    val hasOptions get() = this == PEN || this == HIGHLIGHT || this == ERASER
 }
 
 /** Grosores como fracción del ancho de la página. */
@@ -181,6 +197,10 @@ private const val MAX_WIDTH = 0.07f
 private const val MIN_PEN_WIDTH = 0.001f
 private const val MAX_PEN_WIDTH = 0.012f
 private const val MIN_OPACITY = 0.1f
+
+/** radio del borrador en dp */
+private const val MIN_ERASER = 6f
+private const val MAX_ERASER = 40f
 
 private val EraserIcon: ImageVector = ImageVector.Builder("Eraser", 24.dp, 24.dp, 24f, 24f)
     .addPath(
@@ -301,7 +321,40 @@ class PdfViewModel(app: Application, savedState: SavedStateHandle) : AndroidView
     }
 
     fun removeStroke(stroke: PdfStroke) {
-        if (stroke in strokes.value) change(strokes.value - stroke)
+        if (stroke in strokes.value) edit(strokes.value - stroke)
+    }
+
+    /** borra de cada trazo de la pagina solo lo que cae dentro del circulo */
+    fun erasePart(page: Int, x: Float, y: Float, radius: Float, w: Float, h: Float) {
+        var changed = false
+        val result = buildList {
+            for (stroke in strokes.value) {
+                val pieces = if (stroke.page == page) stroke.erase(x, y, radius, w, h) else null
+                if (pieces == null) add(stroke) else { changed = true; addAll(pieces) }
+            }
+        }
+        if (changed) edit(result)
+    }
+
+    private var batchStart: List<PdfStroke>? = null
+
+    /** desde aqui y hasta endBatch los cambios cuentan como un solo paso de deshacer */
+    fun beginBatch() {
+        batchStart = strokes.value
+    }
+
+    fun endBatch() {
+        val start = batchStart ?: return
+        batchStart = null
+        if (start == strokes.value) return
+        undoStack.addLast(start)
+        if (undoStack.size > 200) undoStack.removeFirst()
+        redoStack.clear()
+        apply(strokes.value)
+    }
+
+    private fun edit(newList: List<PdfStroke>) {
+        if (batchStart != null) apply(newList) else change(newList)
     }
 
     fun undo() {
@@ -414,10 +467,16 @@ fun PdfViewerScreen(
     LaunchedEffect(recent.firstOrNull()) { recent.firstOrNull()?.let { if (highlightColor == HIGHLIGHT_PRESETS.first()) highlightColor = it } }
     LaunchedEffect(recentPen.firstOrNull()) { recentPen.firstOrNull()?.let { if (penColor == TEXT_PRESETS.first()) penColor = it } }
 
-    // Volver a tocar la herramienta activa muestra u oculta sus opciones
-    fun selectTool(t: Tool) {
-        optionsOpen = t.hasOptions && (t != tool || !optionsOpen)
+    val bar = rememberAppBarVisibility()
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex * 100_000f + listState.firstVisibleItemScrollOffset }
+            .collect(bar::scrolledTo)
+    }
+
+    // tocar elige la herramienta, mantenerla presionada ademas abre sus opciones
+    fun selectTool(t: Tool, options: Boolean) {
         tool = t
+        optionsOpen = options && t.hasOptions
     }
     val toolbar: @Composable (Boolean) -> Unit = { atBottom ->
         PdfToolbar(
@@ -426,8 +485,13 @@ fun PdfViewerScreen(
             highlightColor = highlightColor,
             noteCount = notes.size,
             atBottom = atBottom,
-            onTool = ::selectTool,
+            onTool = { selectTool(it, options = false) },
+            onToolOptions = { selectTool(it, options = true) },
             onNotesIndex = { indexOpen = true },
+            canUndo = canUndo,
+            canRedo = canRedo,
+            onUndo = vm::undo,
+            onRedo = vm::redo,
         )
     }
 
@@ -448,15 +512,14 @@ fun PdfViewerScreen(
         },
         topBar = {
             // Herramientas justo debajo de la barra superior, salvo que en Ajustes se pidan abajo
-            Column {
+            HidingTopBar(bar.visible, appBar = {
             TopAppBar(
+                windowInsets = WindowInsets(0),
                 title = { Text(doc?.title.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver") }
                 },
                 actions = {
-                    IconButton(onClick = vm::undo, enabled = canUndo) { Icon(Icons.AutoMirrored.Filled.Undo, "Deshacer") }
-                    IconButton(onClick = vm::redo, enabled = canRedo) { Icon(Icons.AutoMirrored.Filled.Redo, "Rehacer") }
                     Box {
                         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -483,7 +546,8 @@ fun PdfViewerScreen(
                 },
                 colors = appBarColors(),
             )
-            if (toolbarOnTop && ratios != null) toolbar(false)
+            }) {
+                if (toolbarOnTop && ratios != null) toolbar(false)
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -543,7 +607,7 @@ fun PdfViewerScreen(
                                     strokeAlpha = if (tool == Tool.PEN) 1f else settings.highlighterOpacity,
                                     straightLine = tool == Tool.HIGHLIGHT && settings.highlighterStraight,
                                     stabilizer = if (tool == Tool.PEN) settings.penStabilizer else 0f,
-                                    onDrawStart = { optionsOpen = false },
+                                    onDrawStart = { optionsOpen = false; bar.hide() },
                                     notes = notesByPage[index].orEmpty(),
                                     pulse = pulse,
                                     onPlace = { x, y ->
@@ -611,6 +675,7 @@ fun PdfViewerScreen(
                         )
                     }
                     if (busy) CircularProgressIndicator(Modifier.align(Alignment.Center))
+                    ShowAppBarButton(bar, Modifier.align(Alignment.TopStart))
                     // Del lado contrario a la barra, para que el panel de opciones no lo tape
                     if (tool != Tool.NOTE) {
                         Surface(
@@ -630,7 +695,15 @@ fun PdfViewerScreen(
                         val panelModifier = Modifier
                             .align(if (toolbarOnTop) Alignment.TopCenter else Alignment.BottomCenter)
                             .padding(8.dp)
-                        if (tool == Tool.PEN) {
+                        if (tool == Tool.ERASER) {
+                            EraserOptions(
+                                partial = settings.eraserPartial,
+                                onPartial = settings::updateEraserPartial,
+                                size = settings.eraserSize,
+                                onSize = settings::updateEraserSize,
+                                modifier = panelModifier,
+                            )
+                        } else if (tool == Tool.PEN) {
                             ToolOptions(
                                 color = penColor,
                                 colors = (recentPen + TEXT_PRESETS).distinct().take(10),
@@ -642,6 +715,8 @@ fun PdfViewerScreen(
                                 modifier = panelModifier,
                                 stabilizer = settings.penStabilizer,
                                 onStabilizer = settings::updatePenStabilizer,
+                                pressure = settings.penPressure,
+                                onPressure = settings::updatePenPressure,
                             )
                         } else {
                             ToolOptions(
@@ -747,8 +822,10 @@ private fun PdfPage(
     // el trazo en curso comparte su lista de puntos, por eso cada cambio debe contar como nuevo
     var current by remember { mutableStateOf<PdfStroke?>(null, neverEqualPolicy()) }
     val latestStrokes by rememberUpdatedState(strokes)
-    val eraseRadius = with(LocalDensity.current) { 14.dp.toPx() }
+    // donde va el borrador parcial mientras se usa, para dibujar su contorno
+    var eraserAt by remember { mutableStateOf<Offset?>(null) }
     val pxPerDp = LocalDensity.current.density
+    val settings = (LocalContext.current.applicationContext as EstudiaApp).settings
     val minPointGap = 0.75f * pxPerDp
     var pageSize by remember { mutableStateOf(IntSize.Zero) }
 
@@ -775,11 +852,29 @@ private fun PdfPage(
                 val h = size.height.toFloat()
 
                 if (tool == Tool.ERASER) {
+                    val partial = settings.eraserPartial
+                    val radius = settings.eraserSize * pxPerDp
                     fun eraseAt(p: Offset) {
-                        latestStrokes.firstOrNull { hits(it, p, w, h, eraseRadius) }?.let(vm::removeStroke)
+                        if (partial) {
+                            vm.erasePart(index, p.x, p.y, radius, w, h)
+                            eraserAt = p
+                        } else {
+                            latestStrokes.firstOrNull { hits(it, p, w, h, radius) }?.let(vm::removeStroke)
+                        }
                     }
-                    eraseAt(down.position)
-                    drag(down.id) { change -> eraseAt(change.position); change.consume() }
+                    // toda la pasada del borrador se deshace de una vez
+                    vm.beginBatch()
+                    try {
+                        eraseAt(down.position)
+                        drag(down.id) { change ->
+                            change.historical.forEach { eraseAt(it.position) }
+                            eraseAt(change.position)
+                            change.consume()
+                        }
+                    } finally {
+                        eraserAt = null
+                        vm.endBatch()
+                    }
                     return@awaitEachGesture
                 }
 
@@ -788,7 +883,14 @@ private fun PdfPage(
                 val straight = straightLine
                 val pen = tool == Tool.PEN
                 // solo el lapiz cambia de grosor: en el destacador se notarian los tramos encimados
-                val input = PenInput(stabilizer, pxPerDp, start.x, start.y, down.uptimeMillis)
+                // el lapiz optico mide la presion de 0 a 1, el dedo depende de cada pantalla
+                val stylus = down.type == PointerType.Stylus
+                fun pressureOf(raw: Float) = when {
+                    !pen || !settings.penPressure -> null
+                    stylus -> raw
+                    else -> settings.fingerPressure.normalize(raw)
+                }
+                val input = PenInput(stabilizer, pxPerDp, start.x, start.y, down.uptimeMillis, pressureOf(down.pressure))
                 val widths = if (pen) mutableListOf(input.width) else mutableListOf()
                 current = PdfStroke(index, color, strokeWidth, points, straight, strokeAlpha, pen, widths)
                 var added = start
@@ -799,8 +901,8 @@ private fun PdfPage(
                     if (pen) widths += input.width
                     added = p
                 }
-                fun follow(p: Offset, time: Long) {
-                    input.move(p.x, p.y, time)
+                fun follow(p: Offset, time: Long, pressure: Float?) {
+                    input.move(p.x, p.y, time, pressure)
                     val smoothed = Offset(input.x, input.y)
                     if ((smoothed - added).getDistance() >= minPointGap) add(smoothed)
                 }
@@ -811,14 +913,17 @@ private fun PdfPage(
                         points += listOf(start.x / w, start.y / h, latest.x / w, start.y / h)
                     } else {
                         // el telefono registra mas puntos que cuadros: sin ellos los trazos rapidos salen quebrados
-                        change.historical.forEach { follow(it.position, it.uptimeMillis) }
-                        follow(latest, change.uptimeMillis)
+                        // los puntos intermedios no traen presion, usan la del evento
+                        val pressure = pressureOf(change.pressure)
+                        change.historical.forEach { follow(it.position, it.uptimeMillis, pressure) }
+                        follow(latest, change.uptimeMillis, pressure)
                     }
                     current = current
                     change.consume()
                 }
                 // el punto estabilizado va atras del dedo: al soltar, el trazo llega hasta donde quedo el dedo
                 if (!straight && latest != added) add(latest)
+                if (pen && !stylus) settings.saveFingerPressure()
                 val stroke = current?.copy(points = points.toList(), widths = widths.toList())
                 current = null
                 if (completed && stroke != null && (!straight || stroke.points.size >= 4)) vm.addStroke(stroke)
@@ -830,6 +935,9 @@ private fun PdfPage(
         }
         Canvas(Modifier.fillMaxSize().then(drawModifier)) {
             current?.let { drawHighlight(it) }
+            eraserAt?.let {
+                drawCircle(ComposeColor.Gray, settings.eraserSize * pxPerDp, it, style = Stroke(1.5f * pxPerDp))
+            }
         }
 
         if (tool == Tool.NOTE) {
@@ -976,14 +1084,26 @@ private fun PdfToolbar(
     noteCount: Int,
     atBottom: Boolean,
     onTool: (Tool) -> Unit,
+    onToolOptions: (Tool) -> Unit,
     onNotesIndex: () -> Unit,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
 ) {
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .then(if (atBottom) Modifier.navigationBarsPadding() else Modifier)
+                .then(if (atBottom) Modifier.navigationBarsPadding() else Modifier),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            IconButton(onClick = onUndo, enabled = canUndo, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.AutoMirrored.Filled.Undo, "Deshacer", Modifier.size(20.dp))
+            }
+            IconButton(onClick = onRedo, enabled = canRedo, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.AutoMirrored.Filled.Redo, "Rehacer", Modifier.size(20.dp))
+            }
             Tool.entries.forEach { t ->
                 ToolbarItem(
                     icon = when (t) {
@@ -1002,6 +1122,7 @@ private fun PdfToolbar(
                         else -> null
                     },
                     onClick = { onTool(t) },
+                    onLongClick = if (t.hasOptions) ({ onToolOptions(t) }) else null,
                 )
             }
             ToolbarItem(
@@ -1010,17 +1131,37 @@ private fun PdfToolbar(
                 selected = false,
                 dot = null,
                 onClick = onNotesIndex,
+                onLongClick = null,
             )
         }
     }
 }
 
+/** onLongClick abre las opciones de la herramienta. Las que tienen llevan una marca en la esquina */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun RowScope.ToolbarItem(icon: ImageVector, label: String, selected: Boolean, dot: Int?, onClick: () -> Unit) {
+private fun RowScope.ToolbarItem(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    dot: Int?,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
+) {
+    val haptics = LocalHapticFeedback.current
     Column(
         Modifier
             .weight(1f)
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick?.let { open ->
+                    {
+                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                        open()
+                    }
+                },
+                onLongClickLabel = "Opciones",
+            )
             .padding(top = 6.dp, bottom = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -1047,12 +1188,23 @@ private fun RowScope.ToolbarItem(icon: ImageVector, label: String, selected: Boo
                         .background(ComposeColor(dot), CircleShape)
                 )
             }
+            if (onLongClick != null) {
+                Icon(
+                    Icons.Default.ArrowDropDown,
+                    contentDescription = null,
+                    tint = if (selected) c.onPrimaryContainer else c.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.BottomEnd).offset(x = 2.dp, y = 4.dp).size(14.dp),
+                )
+            }
         }
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
+            fontSize = 10.sp,
             color = if (selected) c.onSurface else c.onSurfaceVariant,
             maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -1073,9 +1225,11 @@ private fun ToolOptions(
     onStraight: (Boolean) -> Unit = {},
     opacity: Float? = null,
     onOpacity: (Float) -> Unit = {},
-    /** solo el lapiz estabiliza el pulso */
+    /** solo el lapiz estabiliza el pulso y puede seguir la presion */
     stabilizer: Float? = null,
     onStabilizer: (Float) -> Unit = {},
+    pressure: Boolean? = null,
+    onPressure: (Boolean) -> Unit = {},
 ) {
     Surface(
         shape = MaterialTheme.shapes.medium,
@@ -1091,6 +1245,14 @@ private fun ToolOptions(
             ) {
                 colors.forEach { c -> Swatch(c, selected = c == color, size = 30) { onColor(c) } }
                 IconButton(onClick = onPick) { Icon(Icons.Default.Palette, "Elegir color") }
+            }
+            if (pressure != null) {
+                FilterChip(
+                    selected = pressure,
+                    onClick = { onPressure(!pressure) },
+                    label = { Text("Grosor según la presión") },
+                    leadingIcon = { Icon(Icons.Default.TouchApp, null, Modifier.size(18.dp)) },
+                )
             }
             if (straight != null) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1150,6 +1312,58 @@ private fun ToolOptions(
                         modifier = Modifier.weight(1f),
                     )
                 }
+            }
+        }
+    }
+}
+
+/** opciones del borrador: que borra y de que tamano es */
+@Composable
+private fun EraserOptions(
+    partial: Boolean,
+    onPartial: (Boolean) -> Unit,
+    size: Float,
+    onSize: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 3.dp,
+        shadowElevation = 4.dp,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(
+                    selected = !partial,
+                    onClick = { onPartial(false) },
+                    label = { Text("Trazo completo") },
+                    leadingIcon = { Icon(Icons.Default.Gesture, null, Modifier.size(18.dp)) },
+                )
+                FilterChip(
+                    selected = partial,
+                    onClick = { onPartial(true) },
+                    label = { Text("Parcial") },
+                    leadingIcon = { Icon(EraserIcon, null, Modifier.size(18.dp)) },
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                // vista previa del borrador a tamano real
+                Box(Modifier.size((MAX_ERASER * 2).dp), contentAlignment = Alignment.Center) {
+                    Box(Modifier.size((size * 2).dp).border(1.5.dp, MaterialTheme.colorScheme.outline, CircleShape))
+                }
+                LabeledSlider(
+                    label = "Tamaño",
+                    valueText = "${((size - MIN_ERASER) / (MAX_ERASER - MIN_ERASER) * 100).roundToInt()}%",
+                    value = size,
+                    range = MIN_ERASER..MAX_ERASER,
+                    onChange = onSize,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }
