@@ -37,6 +37,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.offset
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -195,6 +197,9 @@ private const val MAX_WIDTH = 0.07f
 private const val MIN_PEN_WIDTH = 0.001f
 private const val MAX_PEN_WIDTH = 0.012f
 private const val MIN_OPACITY = 0.1f
+
+/** color del anillo al saltar a una nota, el mismo de editor.css */
+private val NOTE_PULSE = ComposeColor(0xFFD25D8C)
 
 /** desplazamiento horizontal que se aplica cuando la lista ya tiene su ancho nuevo */
 private class PendingScroll {
@@ -449,7 +454,8 @@ fun PdfViewerScreen(
     var pendingPlace by remember { mutableStateOf<Triple<Int, Float, Float>?>(null) }
     var openNoteId by rememberSaveable { mutableStateOf<Long?>(null) }
     var indexOpen by remember { mutableStateOf(false) }
-    var jumpTo by remember { mutableStateOf<StickyNoteEntity?>(null) }
+    // cada salto lleva su momento, asi tocar dos veces la misma nota vuelve a saltar
+    var jumpTo by remember { mutableStateOf<Pair<StickyNoteEntity, Long>?>(null) }
     var pulse by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     LaunchedEffect(Unit) { vm.stickyCreated.collect(onOpenStickyNote) }
 
@@ -650,9 +656,9 @@ fun PdfViewerScreen(
                     val viewportPx = with(density) { maxHeight.toPx() }
                     val viewportWidthPx = with(density) { maxWidth.toPx() }
                     val pageWidthPx = with(density) { (pageWidth - 16.dp).toPx() }
+                    // el pedido no se borra al empezar: eso cambiaba la clave y cancelaba el salto a medio camino
                     LaunchedEffect(jumpTo) {
-                        val n = jumpTo ?: return@LaunchedEffect
-                        jumpTo = null
+                        val n = jumpTo?.first ?: return@LaunchedEffect
                         val page = n.page.coerceIn(0, pages.lastIndex)
                         val pageHeightPx = pageWidthPx * pages[page]
                         listState.animateScrollToItem(page, (n.y * pageHeightPx - viewportPx / 3).roundToInt().coerceAtLeast(0))
@@ -798,7 +804,7 @@ fun PdfViewerScreen(
         NotesIndexSheet(
             notes = notes,
             isPdf = true,
-            onJump = { indexOpen = false; jumpTo = it },
+            onJump = { indexOpen = false; jumpTo = it to System.nanoTime() },
             onDismiss = { indexOpen = false },
         )
     }
@@ -998,13 +1004,16 @@ private fun PageNoteMarker(
     val half = with(LocalDensity.current) { sizeDp.toPx() / 2 }
     var drag by remember(note.x, note.y) { mutableStateOf(Offset.Zero) }
     var dragging by remember { mutableStateOf(false) }
-    val emphasis = remember { Animatable(1f) }
+    // al saltar a la nota sale un anillo desde el pin, igual que en los documentos
+    val ring = remember { Animatable(0f) }
     LaunchedEffect(pulse) {
         if (pulse?.first == note.id) repeat(3) {
-            emphasis.animateTo(1.6f, tween(220))
-            emphasis.animateTo(1f, tween(320))
+            ring.snapTo(0f)
+            ring.animateTo(1f, tween(1100, easing = FastOutSlowInEasing))
         }
+        ring.snapTo(0f)
     }
+    val ringSpread = with(LocalDensity.current) { 22.dp.toPx() }
 
     val cx = note.x * pageSize.width + drag.x
     val cy = note.y * pageSize.height + drag.y
@@ -1032,8 +1041,12 @@ private fun PageNoteMarker(
         size = sizeDp,
         modifier = Modifier
             .offset { IntOffset((cx - half).roundToInt(), (cy - half).roundToInt()) }
+            .drawBehind {
+                val p = ring.value
+                if (p > 0f) drawCircle(NOTE_PULSE.copy(alpha = 0.8f * (1 - p)), size.minDimension / 2 + ringSpread * p)
+            }
             .graphicsLayer {
-                val s = emphasis.value * if (dragging) 1.25f else 1f
+                val s = if (dragging) 1.25f else 1f
                 scaleX = s
                 scaleY = s
             }
