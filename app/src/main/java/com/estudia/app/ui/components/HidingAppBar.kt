@@ -1,6 +1,14 @@
 package com.estudia.app.ui.components
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.SystemClock
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -8,6 +16,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -35,6 +47,9 @@ class AppBarVisibility {
     private var travelled = 0f
     private var quietUntil = 0L
 
+    /** mientras es true, desplazarse no trae de vuelta el appbar. El boton para mostrarlo sigue funcionando */
+    var keepHidden = false
+
     fun show() = set(true)
 
     fun hide() = set(false)
@@ -50,9 +65,9 @@ class AppBarVisibility {
     fun scrolledTo(position: Float) {
         val delta = position - (last ?: position)
         last = position
-        if (SystemClock.uptimeMillis() < quietUntil) return
+        // el contenido avisa su posicion tambien al cambiar de alto, por ejemplo al abrir el teclado
+        if (delta == 0f || keepHidden || SystemClock.uptimeMillis() < quietUntil) return
         if (position <= 0f) return show()
-        if (delta == 0f) return
         travelled = if (delta > 0 == travelled > 0) travelled + delta else delta
         if (travelled > THRESHOLD) hide() else if (travelled < -THRESHOLD) show()
     }
@@ -65,6 +80,44 @@ class AppBarVisibility {
 
 @Composable
 fun rememberAppBarVisibility() = remember { AppBarVisibility() }
+
+/** pantalla baja, como un telefono en horizontal: las barras se achican para dejar lugar al texto */
+@Composable
+fun isShortScreen() = LocalConfiguration.current.screenHeightDp < SHORT_SCREEN_DP
+
+private const val SHORT_SCREEN_DP = 480
+
+/** el teclado esta abierto en una pantalla baja, donde casi no queda lugar para el texto */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun isCrampedByKeyboard() = WindowInsets.isImeVisible && isShortScreen()
+
+/** con el teclado en una pantalla baja se esconden el appbar y la barra de estado, para dejar lugar al texto */
+@Composable
+fun HideAppBarWithKeyboard(bar: AppBarVisibility) {
+    val cramped = isCrampedByKeyboard()
+    val view = LocalView.current
+    DisposableEffect(cramped) {
+        bar.keepHidden = cramped
+        if (cramped) bar.hide()
+        val window = view.context.findActivity()?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+        if (cramped) {
+            controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller?.hide(WindowInsetsCompat.Type.statusBars())
+        }
+        onDispose {
+            bar.keepHidden = false
+            if (cramped) controller?.show(WindowInsetsCompat.Type.statusBars())
+        }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 
 /**
  * parte superior de un editor: el appbar, que se puede esconder, y debajo lo que siempre se ve

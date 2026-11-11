@@ -97,7 +97,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import com.estudia.app.ui.components.HideAppBarWithKeyboard
 import com.estudia.app.ui.components.HidingTopBar
+import com.estudia.app.ui.components.isShortScreen
+import androidx.compose.foundation.layout.IntrinsicSize
 import com.estudia.app.ui.components.ShowAppBarButton
 import com.estudia.app.ui.components.rememberAppBarVisibility
 import androidx.compose.foundation.layout.fillMaxSize
@@ -442,6 +445,7 @@ fun EditorScreen(
 
     val toolbarOnTop = (context.applicationContext as EstudiaApp).settings.toolbarPosition == ToolbarPosition.TOP
     val bar = rememberAppBarVisibility()
+    HideAppBarWithKeyboard(bar)
     val toolbars: @Composable () -> Unit = {
         when {
             editing -> FormattingToolbar(
@@ -483,7 +487,7 @@ fun EditorScreen(
                     )
                 }
                 // En modo lectura también se pueden agregar y buscar notas
-                RibbonBar(tabs = { RibbonTabButton("Notas", selected = true) {} }) {
+                RibbonBar(tabs = listOf("Notas"), selected = 0, onSelect = {}) {
                     NotesTools(notes.size, placing, onAdd = { placing = !placing }, onIndex = { indexOpen = true })
                 }
             }
@@ -881,7 +885,9 @@ internal fun FormattingToolbar(
         else if (tab == RibbonTab.HEADER) tab = RibbonTab.HOME
     }
     RibbonBar(
-        tabs = { tabs.forEach { t -> RibbonTabButton(t.label, selected = t == tab) { tab = t } } },
+        tabs = tabs.map { it.label },
+        selected = tabs.indexOf(tab),
+        onSelect = { tab = tabs[it] },
         leading = {
             IconButton(onClick = { editor.call("editor.undo") }, enabled = format.canUndo, modifier = Modifier.size(36.dp)) {
                 Icon(Icons.AutoMirrored.Filled.Undo, "Deshacer", Modifier.size(20.dp))
@@ -915,7 +921,15 @@ internal fun FormattingToolbar(
 
 /** Cinta como la de Word: pestañas arriba y sus herramientas debajo. leading queda fijo junto a las pestañas. */
 @Composable
-private fun RibbonBar(tabs: @Composable () -> Unit, leading: @Composable () -> Unit = {}, tools: @Composable () -> Unit) {
+private fun RibbonBar(
+    tabs: List<String>,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    leading: @Composable () -> Unit = {},
+    tools: @Composable () -> Unit,
+) {
+    // en una pantalla baja todo va en una fila y las pestanas pasan a un menu
+    if (isShortScreen()) return CompactRibbonBar(tabs, selected, onSelect, leading, tools)
     Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
         Column {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -926,13 +940,65 @@ private fun RibbonBar(tabs: @Composable () -> Unit, leading: @Composable () -> U
                         .horizontalScroll(rememberScrollState())
                         .padding(horizontal = 4.dp),
                 ) {
-                    tabs()
+                    tabs.forEachIndexed { i, label -> RibbonTabButton(label, selected = i == selected) { onSelect(i) } }
                 }
             }
             HorizontalDivider()
             Row(
                 Modifier
                     .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                tools()
+            }
+        }
+    }
+}
+
+/** la cinta en una sola fila: deshacer, la pestana actual como menu y sus herramientas */
+@Composable
+private fun CompactRibbonBar(
+    tabs: List<String>,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    leading: @Composable () -> Unit,
+    tools: @Composable () -> Unit,
+) {
+    Surface(tonalElevation = 3.dp, shadowElevation = 2.dp) {
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically) {
+            leading()
+            var open by remember { mutableStateOf(false) }
+            Box {
+                Row(
+                    Modifier
+                        .clickable(enabled = tabs.size > 1) { open = true }
+                        .padding(start = 8.dp, end = 2.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        tabs.getOrElse(selected) { "" },
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                    )
+                    if (tabs.size > 1) Icon(Icons.Default.ArrowDropDown, "Cambiar pestaña", tint = MaterialTheme.colorScheme.primary)
+                }
+                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                    tabs.forEachIndexed { i, label ->
+                        DropdownMenuItem(
+                            text = { Text(label, fontWeight = if (i == selected) FontWeight.Bold else FontWeight.Normal) },
+                            onClick = { open = false; onSelect(i) },
+                        )
+                    }
+                }
+            }
+            VerticalDivider(Modifier.padding(vertical = 8.dp))
+            Row(
+                Modifier
+                    .weight(1f)
                     .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,

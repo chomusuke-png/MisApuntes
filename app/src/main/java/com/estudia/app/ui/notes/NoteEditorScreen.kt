@@ -10,7 +10,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.ui.focus.onFocusChanged
+import com.estudia.app.ui.components.HideAppBarWithKeyboard
+import com.estudia.app.ui.components.isShortScreen
+import com.estudia.app.ui.components.isCrampedByKeyboard
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.graphics.SolidColor
 import com.estudia.app.ui.components.HidingTopBar
 import com.estudia.app.ui.components.ShowAppBarButton
 import com.estudia.app.ui.components.rememberAppBarVisibility
@@ -174,7 +182,7 @@ class NoteEditorViewModel(app: Application, savedState: SavedStateHandle) : Andr
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewModel = viewModel()) {
     val context = LocalContext.current
@@ -242,6 +250,11 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
 
     val toolbarOnTop = (context.applicationContext as EstudiaApp).settings.toolbarPosition == ToolbarPosition.TOP
     val bar = rememberAppBarVisibility()
+    HideAppBarWithKeyboard(bar)
+    var titleFocused by remember { mutableStateOf(false) }
+    // con el teclado abierto en una pantalla baja, el titulo solo se ve mientras se escribe en el
+    val showTitle = titleFocused || !isCrampedByKeyboard()
+    val shortScreen = isShortScreen()
     val toolbar: @Composable () -> Unit = {
         FormattingToolbar(
             format = format,
@@ -293,10 +306,21 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                note?.let { n -> NoteBadge(n.icon, n.color, 36.dp, Modifier.clickable { lookDialog = true }) }
+            if (showTitle) Row(
+                Modifier.fillMaxWidth().padding(start = 16.dp, top = if (shortScreen) 4.dp else 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                note?.let { n -> NoteBadge(n.icon, n.color, if (shortScreen) 28.dp else 36.dp, Modifier.clickable { lookDialog = true }) }
                 Spacer(Modifier.width(4.dp))
-                TextField(
+                // el campo normal mide 56 dp de alto y en una pantalla baja no cabe junto al teclado
+                if (shortScreen) CompactTitleField(
+                    value = title.orEmpty(),
+                    onValueChange = { title = it; vm.setTitle(it) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(titleFocus)
+                        .onFocusChanged { titleFocused = it.isFocused },
+                ) else TextField(
                     value = title.orEmpty(),
                     onValueChange = { title = it; vm.setTitle(it) },
                     placeholder = { Text("Título") },
@@ -306,11 +330,14 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
                         focusedContainerColor = Color.Transparent,
                         unfocusedContainerColor = Color.Transparent,
                     ),
-                    modifier = Modifier.weight(1f).focusRequester(titleFocus),
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(titleFocus)
+                        .onFocusChanged { titleFocused = it.isFocused },
                 )
                 ShowAppBarButton(bar)
             }
-            HorizontalDivider()
+            if (showTitle) HorizontalDivider()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 val initial = content
                 if (initial == null) {
@@ -412,4 +439,25 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
             vm.delete(onBack)
         }
     }
+}
+
+/** titulo en una sola linea baja, para pantallas donde el teclado deja poco espacio */
+@Composable
+private fun CompactTitleField(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier) {
+    val c = MaterialTheme.colorScheme
+    val style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold, color = c.onSurface)
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        singleLine = true,
+        textStyle = style,
+        cursorBrush = SolidColor(c.primary),
+        modifier = modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+        decorationBox = { field ->
+            Box {
+                if (value.isEmpty()) Text("Título", style = style.copy(color = c.onSurfaceVariant))
+                field()
+            }
+        },
+    )
 }
