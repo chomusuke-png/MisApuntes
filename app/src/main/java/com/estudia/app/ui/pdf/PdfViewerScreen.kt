@@ -35,17 +35,13 @@ import com.estudia.app.ui.notes.PlacingBanner
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.offset
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.sp
 import com.estudia.app.data.erase
 import com.estudia.app.ui.components.HidingTopBar
@@ -53,7 +49,9 @@ import com.estudia.app.ui.components.ShowAppBarButton
 import com.estudia.app.ui.components.rememberAppBarVisibility
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.horizontalScroll
@@ -197,6 +195,11 @@ private const val MAX_WIDTH = 0.07f
 private const val MIN_PEN_WIDTH = 0.001f
 private const val MAX_PEN_WIDTH = 0.012f
 private const val MIN_OPACITY = 0.1f
+
+/** desplazamiento horizontal que se aplica cuando la lista ya tiene su ancho nuevo */
+private class PendingScroll {
+    var x: Float? = null
+}
 
 /** radio del borrador en dp */
 private const val MIN_ERASER = 6f
@@ -453,6 +456,7 @@ fun PdfViewerScreen(
     var scale by remember { mutableFloatStateOf(1f) }
     val listState = rememberLazyListState()
     val hScroll = rememberScrollState()
+    val pendingX = remember { PendingScroll() }
     val snackbar = remember { SnackbarHostState() }
     var menu by remember { mutableStateOf(false) }
 
@@ -473,10 +477,10 @@ fun PdfViewerScreen(
             .collect(bar::scrolledTo)
     }
 
-    // tocar elige la herramienta, mantenerla presionada ademas abre sus opciones
-    fun selectTool(t: Tool, options: Boolean) {
+    // tocar otra herramienta solo la elige, tocar la que ya esta elegida muestra u oculta sus opciones
+    fun selectTool(t: Tool) {
+        optionsOpen = t == tool && t.hasOptions && !optionsOpen
         tool = t
-        optionsOpen = options && t.hasOptions
     }
     val toolbar: @Composable (Boolean) -> Unit = { atBottom ->
         PdfToolbar(
@@ -485,8 +489,7 @@ fun PdfViewerScreen(
             highlightColor = highlightColor,
             noteCount = notes.size,
             atBottom = atBottom,
-            onTool = { selectTool(it, options = false) },
-            onToolOptions = { selectTool(it, options = true) },
+            onTool = ::selectTool,
             onNotesIndex = { indexOpen = true },
             canUndo = canUndo,
             canRedo = canRedo,
@@ -557,18 +560,34 @@ fun PdfViewerScreen(
                 .padding(padding)
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .pointerInput(Unit) {
+                .pointerInput(ratios) {
                     // Dos dedos: zoom y desplazamiento, con cualquier herramienta
+                    val pages = ratios ?: return@pointerInput
                     awaitEachGesture {
                         awaitFirstDown(requireUnconsumed = false)
+                        val layout = PdfLayout(pages, size.width.toFloat(), size.height.toFloat(), 8.dp.toPx(), 8.dp.toPx())
+                        // la lista recien aplica la posicion pedida en el siguiente cuadro, mientras tanto se sigue desde aca
+                        var view: PdfView? = null
                         do {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             if (event.changes.count { it.pressed } >= 2) {
-                                scale = (scale * event.calculateZoom()).coerceIn(1f, 4f)
+                                val current = view ?: PdfView(
+                                    listState.firstVisibleItemIndex,
+                                    listState.firstVisibleItemScrollOffset.toFloat(),
+                                    scale,
+                                    hScroll.value.toFloat(),
+                                )
+                                val centroid = event.calculateCentroid()
                                 val pan = event.calculatePan()
-                                listState.dispatchRawDelta(-pan.y)
-                                hScroll.dispatchRawDelta(-pan.x)
+                                val next = layout.zoom(current, event.calculateZoom(), centroid.x, centroid.y, pan.x, pan.y)
+                                listState.requestScrollToItem(next.index, next.offset.roundToInt())
+                                // con otro zoom el ancho cambia recien al medir, y el desplazamiento se limitaria al ancho viejo
+                                if (next.scale == scale) hScroll.dispatchRawDelta(next.x - hScroll.value) else pendingX.x = next.x
+                                scale = next.scale
+                                view = next
                                 event.changes.forEach { it.consume() }
+                            } else {
+                                view = null
                             }
                         } while (event.changes.any { it.pressed })
                     }
@@ -590,7 +609,13 @@ fun PdfViewerScreen(
                         LazyColumn(
                             state = listState,
                             userScrollEnabled = !tool.draws,
-                            modifier = Modifier.width(pageWidth).fillMaxHeight(),
+                            modifier = Modifier
+                                .width(pageWidth)
+                                .fillMaxHeight()
+                                .onPlaced {
+                                    pendingX.x?.let { hScroll.dispatchRawDelta(it - hScroll.value) }
+                                    pendingX.x = null
+                                },
                             contentPadding = PaddingValues(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
@@ -1084,7 +1109,6 @@ private fun PdfToolbar(
     noteCount: Int,
     atBottom: Boolean,
     onTool: (Tool) -> Unit,
-    onToolOptions: (Tool) -> Unit,
     onNotesIndex: () -> Unit,
     canUndo: Boolean,
     canRedo: Boolean,
@@ -1122,7 +1146,7 @@ private fun PdfToolbar(
                         else -> null
                     },
                     onClick = { onTool(t) },
-                    onLongClick = if (t.hasOptions) ({ onToolOptions(t) }) else null,
+                    hasOptions = t.hasOptions,
                 )
             }
             ToolbarItem(
@@ -1131,14 +1155,13 @@ private fun PdfToolbar(
                 selected = false,
                 dot = null,
                 onClick = onNotesIndex,
-                onLongClick = null,
+                hasOptions = false,
             )
         }
     }
 }
 
-/** onLongClick abre las opciones de la herramienta. Las que tienen llevan una marca en la esquina */
-@OptIn(ExperimentalFoundationApi::class)
+/** las herramientas con opciones llevan una marca en la esquina: se abren tocandolas cuando ya estan elegidas */
 @Composable
 private fun RowScope.ToolbarItem(
     icon: ImageVector,
@@ -1146,22 +1169,12 @@ private fun RowScope.ToolbarItem(
     selected: Boolean,
     dot: Int?,
     onClick: () -> Unit,
-    onLongClick: (() -> Unit)?,
+    hasOptions: Boolean,
 ) {
-    val haptics = LocalHapticFeedback.current
     Column(
         Modifier
             .weight(1f)
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick?.let { open ->
-                    {
-                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                        open()
-                    }
-                },
-                onLongClickLabel = "Opciones",
-            )
+            .clickable(onClick = onClick)
             .padding(top = 6.dp, bottom = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -1188,7 +1201,7 @@ private fun RowScope.ToolbarItem(
                         .background(ComposeColor(dot), CircleShape)
                 )
             }
-            if (onLongClick != null) {
+            if (hasOptions) {
                 Icon(
                     Icons.Default.ArrowDropDown,
                     contentDescription = null,
