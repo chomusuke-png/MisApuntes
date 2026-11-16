@@ -1,10 +1,5 @@
 package com.estudia.app.speech
 
-import android.content.Context
-import android.os.Handler
-import android.os.Looper
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -14,7 +9,6 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.util.Locale
 
 /** lo que devuelve reader.start() del editor: los parrafos y desde cual empezar. null si no hay texto */
 fun parseEditorReading(json: String): Pair<List<String>, Int>? {
@@ -26,7 +20,7 @@ fun parseEditorReading(json: String): Pair<List<String>, Int>? {
 }
 
 /** velocidades que se ofrecen para leer */
-val READ_SPEEDS = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
+val READ_SPEEDS = listOf(0.5f, 0.6f, 0.75f, 0.9f, 1f, 1.25f, 1.5f, 2f)
 
 /** el motor de voz acepta textos de largo limitado, asi que lo largo se corta en oraciones */
 fun splitForSpeech(text: String, max: Int = 3000): List<String> {
@@ -71,10 +65,10 @@ fun chunkOffsets(text: String, chunks: List<String>): IntArray {
 }
 
 /**
- * lee en voz alta una lista de trozos, uno tras otro, con el motor de voz del telefono
+ * lee en voz alta una lista de trozos, uno tras otro, con la voz que se le pase
  * onSegment avisa cual trozo empieza, onWord que parte de el se esta diciendo y onFinish cuando se deja de leer
  */
-class ReadAloud(context: Context, speed: Float) {
+class ReadAloud(private val engine: VoiceEngine, speed: Float) {
     var segments by mutableStateOf<List<String>>(emptyList())
         private set
     var index by mutableIntStateOf(0)
@@ -88,6 +82,12 @@ class ReadAloud(context: Context, speed: Float) {
     var error by mutableStateOf<String?>(null)
         private set
 
+    /** null mientras la voz arranca, que en la voz natural tarda unos segundos */
+    private var ready by mutableStateOf<Boolean?>(null)
+
+    /** se pidio leer pero la voz todavia no esta lista */
+    val preparing get() = active && ready == null
+
     var onSegment: (Int) -> Unit = {}
 
     /** trozo, y desde y hasta que caracter de ese trozo va la palabra que se dice */
@@ -95,40 +95,21 @@ class ReadAloud(context: Context, speed: Float) {
     var onFinish: () -> Unit = {}
 
     var speed = speed
-        set(value) {
-            field = value
-            if (ready == true) tts.setSpeechRate(value)
-        }
-
-    private val main = Handler(Looper.getMainLooper())
-
-    /** null mientras el motor arranca */
-    private var ready: Boolean? = null
 
     // cada vez que se corta la lectura cambia, asi los avisos de lo que se estaba leyendo se ignoran
     private var session = 0
-    private var offsets = IntArray(0)
-
-    private val tts: TextToSpeech = TextToSpeech(context.applicationContext) { status -> main.post { onInit(status) } }
 
     init {
-        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String) {}
-
-            override fun onDone(utteranceId: String) {
-                main.post { chunkDone(utteranceId) }
+        engine.init { problem ->
+            if (problem != null) {
+                ready = false
+                error = problem
+                playing = false
+            } else {
+                ready = true
+                if (active && playing) speakCurrent()
             }
-
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String) {
-                main.post { chunkDone(utteranceId) }
-            }
-
-            // no todos los motores avisan por palabra; si no lo hacen, queda marcado solo el trozo
-            override fun onRangeStart(utteranceId: String, start: Int, end: Int, frame: Int) {
-                main.post { wordStarted(utteranceId, start, end) }
-            }
-        })
+        }
     }
 
     fun start(segments: List<String>, from: Int) {
@@ -136,13 +117,8 @@ class ReadAloud(context: Context, speed: Float) {
         this.segments = segments
         index = from.coerceIn(0, segments.lastIndex)
         active = true
-        playing = true
-        if (ready == false) {
-            playing = false
-            return
-        }
-        error = null
-        speakCurrent()
+        playing = ready != false
+        if (playing) speakCurrent()
     }
 
     fun toggle() {
@@ -152,10 +128,10 @@ class ReadAloud(context: Context, speed: Float) {
     fun pause() {
         playing = false
         session++
-        tts.stop()
+        engine.stop()
     }
 
-    /** el motor no puede seguir desde la mitad, asi que se retoma desde el inicio del trozo */
+    /** la voz no puede seguir desde la mitad, asi que se retoma desde el inicio del trozo */
     fun resume() {
         if (!active || ready == false) return
         playing = true
@@ -175,7 +151,7 @@ class ReadAloud(context: Context, speed: Float) {
     fun stop() {
         if (!active) return
         session++
-        tts.stop()
+        engine.stop()
         active = false
         playing = false
         segments = emptyList()
@@ -184,54 +160,32 @@ class ReadAloud(context: Context, speed: Float) {
 
     fun shutdown() {
         stop()
-        tts.shutdown()
-    }
-
-    private fun onInit(status: Int) {
-        if (status != TextToSpeech.SUCCESS) return fail("Este teléfono no tiene un motor de voz para leer.")
-        val locale = Locale.getDefault().takeIf { it.language == "es" } ?: Locale.forLanguageTag("es")
-        val result = tts.setLanguage(locale)
-        if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-            return fail("Faltan las voces en español. Puedes instalarlas en Ajustes → Voz del sistema.")
-        }
-        ready = true
-        tts.setSpeechRate(speed)
-        if (active && playing) speakCurrent()
-    }
-
-    private fun fail(message: String) {
-        ready = false
-        error = message
-        playing = false
+        engine.shutdown()
     }
 
     private fun speakCurrent() {
         session++
-        tts.stop()
+        engine.stop()
         onSegment(index)
         if (ready != true) return
-        val chunks = splitForSpeech(segments[index])
-        if (chunks.isEmpty()) return advance()
-        offsets = chunkOffsets(segments[index], chunks)
-        chunks.forEachIndexed { k, chunk ->
-            tts.speak(chunk, TextToSpeech.QUEUE_ADD, null, "$session/$index/$k/${chunks.lastIndex}")
-        }
-    }
+        val s = session
+        val i = index
+        engine.speak(segments[i], speed, object : VoiceEngine.Listener {
+            override fun onWord(start: Int, end: Int) {
+                if (s == session && playing) onWord(i, start, end)
+            }
 
-    private fun parse(utteranceId: String): List<Int>? =
-        utteranceId.split('/').map { it.toIntOrNull() ?: return null }.takeIf { it.size == 4 }
+            override fun onDone() {
+                if (s == session && playing) advance()
+            }
 
-    private fun wordStarted(utteranceId: String, start: Int, end: Int) {
-        val (s, i, k) = parse(utteranceId) ?: return
-        if (s != session || i != index || !playing) return
-        val base = offsets.getOrNull(k) ?: return
-        onWord(i, base + start, base + end)
-    }
-
-    private fun chunkDone(utteranceId: String) {
-        val (s, i, k, last) = parse(utteranceId) ?: return
-        if (s != session || i != index || k != last || !playing) return
-        advance()
+            override fun onError(message: String) {
+                if (s != session) return
+                error = message
+                playing = false
+                engine.stop()
+            }
+        })
     }
 
     private fun advance() {

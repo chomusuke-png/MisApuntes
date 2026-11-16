@@ -34,12 +34,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.estudia.app.EstudiaApp
 
-/** un lector por pantalla. Se apaga al salir de ella y usa la velocidad elegida en ajustes */
+/**
+ * un lector por pantalla, con la voz y la velocidad elegidas en ajustes. Se apaga al salir de la pantalla
+ * si la voz natural elegida ya no esta descargada, se usa la del telefono
+ */
 @Composable
 fun rememberReadAloud(): ReadAloud {
     val context = LocalContext.current
-    val settings = (context.applicationContext as EstudiaApp).settings
-    val reader = remember { ReadAloud(context, settings.readSpeed) }
+    val app = context.applicationContext as EstudiaApp
+    val settings = app.settings
+    val natural = NATURAL_VOICES.firstOrNull { it.id == settings.readVoice }?.takeIf { app.naturalVoices.isInstalled(it) }
+    val reader = remember(natural) {
+        ReadAloud(natural?.let { NaturalVoiceEngine(app.naturalVoices, it) } ?: SystemVoice(context), settings.readSpeed)
+    }
     reader.speed = settings.readSpeed
     DisposableEffect(reader) { onDispose { reader.shutdown() } }
     return reader
@@ -71,7 +78,7 @@ fun ReadAloudBar(reader: ReadAloud, label: String, modifier: Modifier = Modifier
                 Icon(Icons.Default.SkipNext, "Siguiente")
             }
             Text(
-                reader.error ?: label,
+                reader.error ?: if (reader.preparing) "Preparando la voz…" else label,
                 style = MaterialTheme.typography.bodySmall,
                 color = if (reader.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,

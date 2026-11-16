@@ -51,6 +51,15 @@ class Settings(context: Context) {
         prefs.edit().putFloat(KEY_PEN_WIDTH, value).apply()
     }
 
+    /** voz para leer: "system" es la del telefono, si no el id de una voz natural descargada */
+    var readVoice by mutableStateOf(prefs.getString(KEY_READ_VOICE, null) ?: "system")
+        private set
+
+    fun updateReadVoice(value: String) {
+        readVoice = value
+        prefs.edit().putString(KEY_READ_VOICE, value).apply()
+    }
+
     /** velocidad de la lectura en voz alta, 1 es la normal */
     var readSpeed by mutableFloatStateOf(prefs.getFloat(KEY_READ_SPEED, 1f))
         private set
@@ -149,6 +158,7 @@ class Settings(context: Context) {
         const val KEY_PEN_WIDTH = "pen_width"
         const val KEY_PEN_STABILIZER = "pen_stabilizer"
         const val KEY_READ_SPEED = "read_speed"
+        const val KEY_READ_VOICE = "read_voice"
         const val KEY_PEN_PRESSURE = "pen_pressure"
         const val KEY_ERASER_PARTIAL = "eraser_partial"
         const val KEY_ERASER_SIZE = "eraser_size"

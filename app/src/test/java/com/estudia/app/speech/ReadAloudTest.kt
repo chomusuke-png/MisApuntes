@@ -95,5 +95,6 @@ class ReadAloudTest {
     fun speedsReadNaturally() {
         assertEquals("1×", speedLabel(1f))
         assertEquals("1,25×", speedLabel(1.25f))
+        assertEquals("0,5×", speedLabel(0.5f))
     }
 }

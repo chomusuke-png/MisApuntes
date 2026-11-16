@@ -1,14 +1,13 @@
 package com.estudia.app.ui.settings
 
-import android.content.Intent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
-import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.FilterChip
 import com.estudia.app.speech.READ_SPEEDS
+import com.estudia.app.speech.ReadVoiceSettings
 import com.estudia.app.speech.speedLabel
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -154,16 +153,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     }
                 },
             )
-            ListItem(
-                headlineContent = { Text("Voz del sistema") },
-                supportingContent = { Text("Elige la voz o instala las voces en español") },
-                leadingContent = { Icon(Icons.Default.RecordVoiceOver, contentDescription = null) },
-                modifier = Modifier.clickable {
-                    // la pantalla de voces no existe con ese nombre en todos los telefonos
-                    runCatching { context.startActivity(Intent("com.android.settings.TTS_SETTINGS")) }
-                        .recoverCatching { context.startActivity(Intent(android.provider.Settings.ACTION_SETTINGS)) }
-                },
-            )
+            ReadVoiceSettings()
             Text(
                 "Actualizaciones",
                 style = MaterialTheme.typography.titleSmall,
