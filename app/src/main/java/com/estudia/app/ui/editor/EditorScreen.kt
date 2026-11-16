@@ -99,6 +99,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import com.estudia.app.ui.components.HideAppBarWithKeyboard
 import com.estudia.app.ui.components.HidingTopBar
+import com.estudia.app.speech.ReadAloudBar
+import com.estudia.app.speech.parseEditorReading
+import com.estudia.app.speech.rememberReadAloud
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import com.estudia.app.ui.components.isShortScreen
 import androidx.compose.foundation.layout.IntrinsicSize
 import com.estudia.app.ui.components.ShowAppBarButton
@@ -445,6 +449,15 @@ fun EditorScreen(
 
     val toolbarOnTop = (context.applicationContext as EstudiaApp).settings.toolbarPosition == ToolbarPosition.TOP
     val bar = rememberAppBarVisibility()
+    val reader = rememberReadAloud()
+    reader.onSegment = { editor.call("reader.show", it) }
+    reader.onWord = { i, start, end -> editor.call("reader.word", i, start, end) }
+    reader.onFinish = { editor.call("reader.clear") }
+    fun startReading() = editor.eval("reader.start()") { raw ->
+        val reading = parseEditorReading(raw)
+        if (reading == null) scope.launch { snackbar.showSnackbar("No hay texto para leer") }
+        else reader.start(reading.first, reading.second)
+    }
     HideAppBarWithKeyboard(bar)
     val toolbars: @Composable () -> Unit = {
         when {
@@ -470,6 +483,7 @@ fun EditorScreen(
                 onFind = { finding = true },
                 onLayoutChange = { pageView = true },
                 onStats = { editor.eval("docStats()") { stats = it } },
+                onRead = ::startReading,
                 onHeaderFooter = ::openHeaders,
                 docTitle = doc?.title.orEmpty(),
                 onLogo = {
@@ -545,6 +559,11 @@ fun EditorScreen(
                             DropdownMenuItem(
                                 text = { Text(if (pageView == true) "Vista móvil (ajustar texto)" else "Vista de página") },
                                 onClick = { menu = false; pageView = pageView != true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (reader.active) "Dejar de leer" else "Leer en voz alta") },
+                                leadingIcon = { Icon(Icons.Default.RecordVoiceOver, null) },
+                                onClick = { menu = false; if (reader.active) reader.stop() else startReading() },
                             )
                             DropdownMenuItem(
                                 text = { Text(if (doc?.pinned == true) "Quitar de fijados" else "Fijar") },
@@ -636,6 +655,13 @@ fun EditorScreen(
             }
             if (placing) PlacingBanner(onCancel = { placing = false }, modifier = Modifier.align(Alignment.TopCenter))
             ShowAppBarButton(bar, Modifier.align(Alignment.TopStart))
+            if (reader.active) {
+                ReadAloudBar(
+                    reader,
+                    label = "Párrafo ${reader.index + 1} de ${reader.segments.size}",
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
+                )
+            }
         }
     }
 
@@ -841,6 +867,8 @@ internal fun FormattingToolbar(
     onInsertImage: (() -> Unit)? = null,
     onFind: (() -> Unit)? = null,
     onStats: (() -> Unit)? = null,
+    /** leer en voz alta, en la pestaña Revisar */
+    onRead: (() -> Unit)? = null,
     onReplaceImage: (() -> Unit)? = null,
     /** Se cambió la hoja: la pantalla pasa a vista de página para que se vea. */
     onLayoutChange: (() -> Unit)? = null,
@@ -861,7 +889,7 @@ internal fun FormattingToolbar(
     val image = format.image
     val tabs = RibbonTab.entries.filter {
         when (it) {
-            RibbonTab.REVIEW -> (onFind != null || onStats != null) && format.hf == null
+            RibbonTab.REVIEW -> (onFind != null || onStats != null || onRead != null) && format.hf == null
             RibbonTab.LAYOUT -> onLayoutChange != null && format.hf == null
             RibbonTab.NOTES -> onAddNote != null && onNotesIndex != null && format.hf == null
             RibbonTab.HEADER -> format.hf != null
@@ -911,6 +939,7 @@ internal fun FormattingToolbar(
             RibbonTab.REVIEW -> {
                 onFind?.let { RibbonButton(Icons.Default.FindReplace, "Buscar y reemplazar", it) }
                 onStats?.let { RibbonButton(Icons.Default.Numbers, "Contar palabras", it) }
+                onRead?.let { RibbonButton(Icons.Default.RecordVoiceOver, "Leer en voz alta", it) }
             }
             RibbonTab.NOTES -> if (onAddNote != null && onNotesIndex != null) {
                 NotesTools(noteCount, placingNote, onAddNote, onNotesIndex)

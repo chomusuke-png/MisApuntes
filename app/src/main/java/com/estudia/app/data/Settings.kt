@@ -51,6 +51,15 @@ class Settings(context: Context) {
         prefs.edit().putFloat(KEY_PEN_WIDTH, value).apply()
     }
 
+    /** velocidad de la lectura en voz alta, 1 es la normal */
+    var readSpeed by mutableFloatStateOf(prefs.getFloat(KEY_READ_SPEED, 1f))
+        private set
+
+    fun updateReadSpeed(value: Float) {
+        readSpeed = value
+        prefs.edit().putFloat(KEY_READ_SPEED, value).apply()
+    }
+
     /** cuanto suaviza el pulso el lapiz de PDF, de 0 a 1 */
     var penStabilizer by mutableFloatStateOf(prefs.getFloat(KEY_PEN_STABILIZER, 0.4f))
         private set
@@ -139,6 +148,7 @@ class Settings(context: Context) {
         const val KEY_TOOLBAR = "toolbar_position"
         const val KEY_PEN_WIDTH = "pen_width"
         const val KEY_PEN_STABILIZER = "pen_stabilizer"
+        const val KEY_READ_SPEED = "read_speed"
         const val KEY_PEN_PRESSURE = "pen_pressure"
         const val KEY_ERASER_PARTIAL = "eraser_partial"
         const val KEY_ERASER_SIZE = "eraser_size"

@@ -46,6 +46,17 @@ import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.unit.sp
 import com.estudia.app.data.erase
+import com.estudia.app.speech.ReadAloudBar
+import com.estudia.app.speech.Box
+import com.estudia.app.speech.PdfPageText
+import com.estudia.app.speech.extractPdfPages
+import com.estudia.app.speech.lineBoxes
+import com.estudia.app.speech.pdfPageReading
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import com.estudia.app.speech.rememberReadAloud
+import androidx.compose.material.icons.filled.RecordVoiceOver
+import java.io.File
 import com.estudia.app.ui.components.HidingTopBar
 import com.estudia.app.ui.components.ShowAppBarButton
 import com.estudia.app.ui.components.rememberAppBarVisibility
@@ -198,6 +209,18 @@ private const val MIN_PEN_WIDTH = 0.001f
 private const val MAX_PEN_WIDTH = 0.012f
 private const val MIN_OPACITY = 0.1f
 
+/** marca de lectura en voz alta sobre la pagina, con un poco de margen */
+private fun DrawScope.drawReadBox(box: Box, alpha: Float) {
+    val pad = 1.5f * density
+    drawRoundRect(
+        color = NOTE_PULSE.copy(alpha = alpha),
+        topLeft = Offset(box.left * size.width - pad, box.top * size.height - pad),
+        size = Size((box.right - box.left) * size.width + 2 * pad, (box.bottom - box.top) * size.height + 2 * pad),
+        cornerRadius = CornerRadius(3f * density),
+        blendMode = BlendMode.Multiply,
+    )
+}
+
 /** color del anillo al saltar a una nota, el mismo de editor.css */
 private val NOTE_PULSE = ComposeColor(0xFFD25D8C)
 
@@ -255,6 +278,14 @@ class PdfViewModel(app: Application, savedState: SavedStateHandle) : AndroidView
     val stickyCreated = MutableSharedFlow<Long>(extraBufferCapacity = 1)
 
     private var fd: ParcelFileDescriptor? = null
+    private var source: File? = null
+    private var pageTexts: List<PdfPageText>? = null
+
+    /** texto de cada pagina, con la posicion de cada letra, para leerlo en voz alta. Se saca una sola vez */
+    suspend fun pageTexts(): List<PdfPageText> = pageTexts ?: withContext(Dispatchers.IO) {
+        val file = source ?: return@withContext emptyList()
+        extractPdfPages(getApplication(), file)
+    }.also { pageTexts = it }
     private var renderer: PdfRenderer? = null
     // PdfRenderer solo permite una página abierta a la vez
     private val lock = Mutex()
@@ -274,6 +305,7 @@ class PdfViewModel(app: Application, savedState: SavedStateHandle) : AndroidView
             strokes.value = repo.loadStrokes(docId)
             runCatching {
                 withContext(Dispatchers.IO) {
+                    source = repo.file(path)
                     val pfd = ParcelFileDescriptor.open(repo.file(path), ParcelFileDescriptor.MODE_READ_ONLY)
                     val r = PdfRenderer(pfd)
                     fd = pfd
@@ -478,6 +510,76 @@ fun PdfViewerScreen(
     LaunchedEffect(recentPen.firstOrNull()) { recentPen.firstOrNull()?.let { if (penColor == TEXT_PRESETS.first()) penColor = it } }
 
     val bar = rememberAppBarVisibility()
+
+    // en voz alta se lee de a trozos, y cada trozo sabe de que pagina es
+    val reader = rememberReadAloud()
+    val readScope = rememberCoroutineScope()
+    var readPages by remember { mutableStateOf<List<Int>>(emptyList()) }
+    var readMaps by remember { mutableStateOf<List<IntArray>>(emptyList()) }
+    var readTexts by remember { mutableStateOf<List<PdfPageText>>(emptyList()) }
+    // lo que se marca sobre la pagina: el trozo que se lee, suave, y la palabra, fuerte
+    var readSegment by remember { mutableStateOf<Pair<Int, List<Box>>?>(null) }
+    var readWord by remember { mutableStateOf<Pair<Int, List<Box>>?>(null) }
+    var following by remember { mutableStateOf(false) }
+
+    // si la marca queda fuera de la pantalla, la vista la sigue
+    fun follow(page: Int, top: Float) {
+        if (following) return
+        val info = listState.layoutInfo
+        val item = info.visibleItemsInfo.firstOrNull { it.index == page }
+        val viewport = info.viewportEndOffset - info.viewportStartOffset
+        val y = item?.let { it.offset + top * it.size }
+        if (y != null && y >= 0 && y <= viewport * 0.8f) return
+        val size = item?.size ?: info.visibleItemsInfo.firstOrNull()?.size ?: return
+        following = true
+        readScope.launch {
+            try {
+                listState.animateScrollToItem(page, (top * size - viewport / 3f).roundToInt().coerceAtLeast(0))
+            } finally {
+                following = false
+            }
+        }
+    }
+    fun marks(segment: Int, from: Int, to: Int): Pair<Int, List<Box>>? {
+        val page = readPages.getOrNull(segment) ?: return null
+        val map = readMaps.getOrNull(segment) ?: return null
+        val boxes = readTexts.getOrNull(page)?.boxes ?: return null
+        if (map.isEmpty() || to <= from) return null
+        val a = map[from.coerceIn(0, map.lastIndex)]
+        val b = map[(to - 1).coerceIn(0, map.lastIndex)]
+        return page to lineBoxes(boxes, a, b)
+    }
+    reader.onSegment = { i ->
+        readWord = null
+        readSegment = marks(i, 0, readMaps.getOrNull(i)?.size ?: 0)
+        readSegment?.let { (page, boxes) -> follow(page, boxes.firstOrNull()?.top ?: 0f) }
+    }
+    reader.onWord = { i, start, end ->
+        readWord = marks(i, start, end)
+        readWord?.let { (page, boxes) -> boxes.firstOrNull()?.let { follow(page, it.top) } }
+    }
+    reader.onFinish = {
+        readSegment = null
+        readWord = null
+    }
+    fun startReading() = readScope.launch {
+        val texts = runCatching { vm.pageTexts() }.getOrElse { emptyList() }
+        val segments = mutableListOf<String>()
+        val maps = mutableListOf<IntArray>()
+        val pages = mutableListOf<Int>()
+        texts.forEachIndexed { page, text ->
+            pdfPageReading(text.text).forEach { segments += it.text; maps += it.map; pages += page }
+        }
+        if (segments.isEmpty()) {
+            snackbar.showSnackbar("Este PDF no tiene texto para leer (¿es un escaneo?)")
+            return@launch
+        }
+        readTexts = texts
+        readMaps = maps
+        readPages = pages
+        val visible = listState.firstVisibleItemIndex
+        reader.start(segments, pages.indexOfFirst { it >= visible }.takeIf { it >= 0 } ?: 0)
+    }
     LaunchedEffect(listState) {
         snapshotFlow { listState.firstVisibleItemIndex * 100_000f + listState.firstVisibleItemScrollOffset }
             .collect(bar::scrolledTo)
@@ -544,6 +646,11 @@ fun PdfViewerScreen(
                                 leadingIcon = { Icon(Icons.Default.SaveAlt, null) },
                                 enabled = strokes.isNotEmpty(),
                                 onClick = { menu = false; exporter.launch("${doc?.title ?: "documento"} (anotado).pdf") },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (reader.active) "Dejar de leer" else "Leer en voz alta") },
+                                leadingIcon = { Icon(Icons.Default.RecordVoiceOver, null) },
+                                onClick = { menu = false; if (reader.active) reader.stop() else startReading() },
                             )
                             DropdownMenuItem(
                                 text = { Text("Convertir en nota editable") },
@@ -647,6 +754,8 @@ fun PdfViewerScreen(
                                     },
                                     onNoteTap = { openNoteId = it.id },
                                     onNoteMoved = vm::moveStickyNote,
+                                    readSegment = readSegment?.takeIf { it.first == index }?.second,
+                                    readWord = readWord?.takeIf { it.first == index }?.second,
                                 )
                             }
                         }
@@ -707,8 +816,15 @@ fun PdfViewerScreen(
                     }
                     if (busy) CircularProgressIndicator(Modifier.align(Alignment.Center))
                     ShowAppBarButton(bar, Modifier.align(Alignment.TopStart))
-                    // Del lado contrario a la barra, para que el panel de opciones no lo tape
-                    if (tool != Tool.NOTE) {
+                    if (reader.active) {
+                        ReadAloudBar(
+                            reader,
+                            label = "Página ${(readPages.getOrNull(reader.index) ?: 0) + 1} de ${pages.size}",
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
+                        )
+                    }
+                    // Del lado contrario a la barra, para que el panel de opciones no lo tape. Mientras se lee, el reproductor ya dice la pagina
+                    if (tool != Tool.NOTE && !reader.active) {
                         Surface(
                             shape = MaterialTheme.shapes.small,
                             tonalElevation = 4.dp,
@@ -848,6 +964,8 @@ private fun PdfPage(
     onPlace: (Float, Float) -> Unit,
     onNoteTap: (StickyNoteEntity) -> Unit,
     onNoteMoved: (StickyNoteEntity, Float, Float) -> Unit,
+    readSegment: List<Box>? = null,
+    readWord: List<Box>? = null,
 ) {
     val bitmap by produceState<Bitmap?>(null, index, widthPx) { value = vm.render(index, widthPx) }
     // el trazo en curso comparte su lista de puntos, por eso cada cambio debe contar como nuevo
@@ -965,6 +1083,9 @@ private fun PdfPage(
             strokes.forEach { drawHighlight(it) }
         }
         Canvas(Modifier.fillMaxSize().then(drawModifier)) {
+            // lo que se esta leyendo en voz alta, en modo multiplicar para que el texto se siga viendo
+            readSegment?.forEach { drawReadBox(it, 0.2f) }
+            readWord?.forEach { drawReadBox(it, 0.5f) }
             current?.let { drawHighlight(it) }
             eraserAt?.let {
                 drawCircle(ComposeColor.Gray, settings.eraserSize * pxPerDp, it, style = Stroke(1.5f * pxPerDp))

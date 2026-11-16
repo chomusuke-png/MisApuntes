@@ -2573,6 +2573,161 @@
 
   // ---------- API para Kotlin ----------
 
+  // ---------- lectura en voz alta ----------
+  // el parrafo que se lee se marca con una capa aparte, asi el documento no cambia ni cuenta como edicion
+  const READ_BLOCKS = 'p,h1,h2,h3,h4,h5,h6,li,td,th,pre,blockquote,dt,dd,div';
+  let readParts = [];
+  let readIndex = -1;
+  let readMark = null;
+  let readWordMark = null;
+
+  function readCollect() {
+    const parts = [];
+    const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+    let current = null;
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (n.nodeType === 1) {
+        if (n.tagName === 'BR' && current) current.text += ' ';
+        continue;
+      }
+      if (!n.nodeValue.trim()) continue;
+      const el = n.parentElement;
+      // lo que esta oculto no se lee
+      if (!el || !el.getClientRects().length) continue;
+      let block = el.closest(READ_BLOCKS);
+      if (!block || !page.contains(block)) block = page;
+      if (!current || current.block !== block) {
+        current = { block: block, first: n, last: n, text: '', nodes: [] };
+        parts.push(current);
+      }
+      current.last = n;
+      current.nodes.push({ node: n, start: current.text.length });
+      current.text += n.nodeValue;
+    }
+    parts.forEach(readNormalize);
+    return parts.filter(function (p) { return p.text; });
+  }
+
+  // junta los espacios como lo hace la app, y recuerda de donde salio cada letra para ubicar la palabra que se lee
+  function readNormalize(p) {
+    const raw = p.text;
+    let text = '';
+    const map = [];
+    let space = false;
+    for (let i = 0; i < raw.length; i++) {
+      if (/\s/.test(raw[i])) {
+        if (text) space = true;
+        continue;
+      }
+      if (space) { text += ' '; map.push(i); space = false; }
+      text += raw[i];
+      map.push(i);
+    }
+    p.text = text;
+    p.map = map;
+  }
+
+  // punto del documento que corresponde a una letra del texto original del parrafo
+  function readPoint(p, raw) {
+    for (let k = p.nodes.length - 1; k >= 0; k--) {
+      const n = p.nodes[k];
+      if (n.start <= raw) return { node: n.node, offset: Math.min(raw - n.start, n.node.nodeValue.length) };
+    }
+    return { node: p.nodes[0].node, offset: 0 };
+  }
+
+  // las marcas van dentro de la hoja, como las notas: en vista de pagina la hoja tiene zoom
+  // y lo que mide la pantalla se pasa a medidas de la hoja
+  function readPlace(mark, rect) {
+    const s = sheetScale();
+    const at = toSheet(rect.left, rect.top);
+    mark.style.display = 'block';
+    mark.style.left = (at[0] - 2) + 'px';
+    mark.style.top = (at[1] - 1) + 'px';
+    mark.style.width = (rect.width / s + 4) + 'px';
+    mark.style.height = (rect.height / s + 2) + 'px';
+  }
+
+  function readMarkEl(id) {
+    const m = document.createElement('div');
+    m.id = id;
+    sheet.appendChild(m);
+    return m;
+  }
+
+  function readWord(i, start, end) {
+    const part = readParts[i];
+    if (!part || end <= start || !page.contains(part.first) || !page.contains(part.last)) return;
+    start = Math.max(0, Math.min(start, part.map.length - 1));
+    end = Math.max(start + 1, Math.min(end, part.map.length));
+    const a = readPoint(part, part.map[start]);
+    const b = readPoint(part, part.map[end - 1]);
+    const r = document.createRange();
+    r.setStart(a.node, a.offset);
+    r.setEnd(b.node, Math.min(b.offset + 1, b.node.nodeValue.length));
+    const rect = r.getBoundingClientRect();
+    if (!rect.width && !rect.height) return;
+    if (!readWordMark) readWordMark = readMarkEl('read-word');
+    readPlace(readWordMark, rect);
+    // en un parrafo largo la vista sigue a la palabra
+    if (rect.top < 0 || rect.bottom > window.innerHeight * 0.85) {
+      window.scrollTo({ top: Math.max(0, window.scrollY + rect.top - window.innerHeight / 3), behavior: 'smooth' });
+    }
+  }
+
+  function readRange(part) {
+    const r = document.createRange();
+    r.setStart(part.first, 0);
+    r.setEnd(part.last, part.last.nodeValue.length);
+    return r;
+  }
+
+  function readShow(i, scroll) {
+    const part = readParts[i];
+    readIndex = i;
+    if (!part || !page.contains(part.first) || !page.contains(part.last)) {
+      if (readMark) readMark.style.display = 'none';
+      return;
+    }
+    const rect = readRange(part).getBoundingClientRect();
+    if (!readMark) readMark = readMarkEl('read-mark');
+    readPlace(readMark, rect);
+    // la palabra marcada era del parrafo anterior
+    if (scroll && readWordMark) readWordMark.style.display = 'none';
+    if (scroll && (rect.top < 0 || rect.bottom > window.innerHeight * 0.8)) {
+      window.scrollTo({ top: Math.max(0, window.scrollY + rect.top - window.innerHeight / 3), behavior: 'smooth' });
+    }
+  }
+
+  window.addEventListener('resize', function () { if (readIndex >= 0) readShow(readIndex, false); });
+
+  window.reader = {
+    // devuelve los parrafos y desde cual empezar: el del cursor, o el primero que se ve en pantalla
+    start: function () {
+      readParts = readCollect();
+      let start = -1;
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount && page.contains(sel.anchorNode)) {
+        start = readParts.findIndex(function (p) {
+          const r = readRange(p);
+          return r.comparePoint(sel.anchorNode, sel.anchorOffset) === 0;
+        });
+      }
+      if (start < 0) start = readParts.findIndex(function (p) { return readRange(p).getBoundingClientRect().bottom > 0; });
+      return JSON.stringify({ parts: readParts.map(function (p) { return p.text; }), start: Math.max(0, start) });
+    },
+    show: function (i) { readShow(i, true); },
+    word: function (i, start, end) { readWord(i, start, end); },
+    clear: function () {
+      readParts = [];
+      readIndex = -1;
+      if (readMark) readMark.remove();
+      if (readWordMark) readWordMark.remove();
+      readMark = null;
+      readWordMark = null;
+    }
+  };
+
   window.editor = {
     cmd: function (name, val) {
       restoreRange();

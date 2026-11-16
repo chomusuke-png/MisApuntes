@@ -1,6 +1,15 @@
 package com.estudia.app.ui.settings
 
+import android.content.Intent
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material3.FilterChip
+import com.estudia.app.speech.READ_SPEEDS
+import com.estudia.app.speech.speedLabel
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -43,7 +52,8 @@ import com.estudia.app.ui.theme.appBarColors
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
-    val app = LocalContext.current.applicationContext as EstudiaApp
+    val context = LocalContext.current
+    val app = context.applicationContext as EstudiaApp
     val settings = app.settings
     val updater = app.updater
     Scaffold(
@@ -122,6 +132,37 @@ fun SettingsScreen(onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            Text(
+                "Lectura en voz alta",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 4.dp),
+            )
+            ListItem(
+                headlineContent = { Text("Velocidad") },
+                leadingContent = { Icon(Icons.Default.Speed, contentDescription = null) },
+                supportingContent = {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        READ_SPEEDS.forEach { s ->
+                            FilterChip(
+                                selected = s == settings.readSpeed,
+                                onClick = { settings.updateReadSpeed(s) },
+                                label = { Text(speedLabel(s)) },
+                            )
+                        }
+                    }
+                },
+            )
+            ListItem(
+                headlineContent = { Text("Voz del sistema") },
+                supportingContent = { Text("Elige la voz o instala las voces en español") },
+                leadingContent = { Icon(Icons.Default.RecordVoiceOver, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    // la pantalla de voces no existe con ese nombre en todos los telefonos
+                    runCatching { context.startActivity(Intent("com.android.settings.TTS_SETTINGS")) }
+                        .recoverCatching { context.startActivity(Intent(android.provider.Settings.ACTION_SETTINGS)) }
+                },
             )
             Text(
                 "Actualizaciones",

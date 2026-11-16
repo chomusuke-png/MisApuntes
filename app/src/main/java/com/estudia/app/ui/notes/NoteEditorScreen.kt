@@ -15,6 +15,12 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.ui.focus.onFocusChanged
 import com.estudia.app.ui.components.HideAppBarWithKeyboard
+import com.estudia.app.speech.ReadAloudBar
+import com.estudia.app.speech.parseEditorReading
+import com.estudia.app.speech.rememberReadAloud
+import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import com.estudia.app.ui.components.isShortScreen
 import com.estudia.app.ui.components.isCrampedByKeyboard
 import androidx.compose.foundation.text.BasicTextField
@@ -250,6 +256,16 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
 
     val toolbarOnTop = (context.applicationContext as EstudiaApp).settings.toolbarPosition == ToolbarPosition.TOP
     val bar = rememberAppBarVisibility()
+    val reader = rememberReadAloud()
+    val readScope = rememberCoroutineScope()
+    reader.onSegment = { editor.call("reader.show", it) }
+    reader.onWord = { i, start, end -> editor.call("reader.word", i, start, end) }
+    reader.onFinish = { editor.call("reader.clear") }
+    fun startReading() = editor.eval("reader.start()") { raw ->
+        val reading = parseEditorReading(raw)
+        if (reading == null) readScope.launch { snackbar.showSnackbar("No hay texto para leer") }
+        else reader.start(reading.first, reading.second)
+    }
     HideAppBarWithKeyboard(bar)
     var titleFocused by remember { mutableStateOf(false) }
     // con el teclado abierto en una pantalla baja, el titulo solo se ve mientras se escribe en el
@@ -284,6 +300,11 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
                     Box {
                         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Más opciones") }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(
+                                text = { Text(if (reader.active) "Dejar de leer" else "Leer en voz alta") },
+                                leadingIcon = { Icon(Icons.Default.RecordVoiceOver, null) },
+                                onClick = { menu = false; if (reader.active) reader.stop() else startReading() },
+                            )
                             DropdownMenuItem(
                                 text = { Text("Cambiar ícono y color") },
                                 leadingIcon = { Icon(Icons.Default.Palette, null) },
@@ -362,6 +383,13 @@ fun NoteEditorScreen(darkTheme: Boolean, onBack: () -> Unit, vm: NoteEditorViewM
                             ).also { editor.view = it }
                         },
                         onRelease = { editor.view = null },
+                    )
+                }
+                if (reader.active) {
+                    ReadAloudBar(
+                        reader,
+                        label = "Párrafo ${reader.index + 1} de ${reader.segments.size}",
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
                     )
                 }
             }
