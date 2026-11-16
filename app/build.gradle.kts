@@ -11,7 +11,7 @@ plugins {
 }
 
 // cada release sube este numero y su tag debe coincidir, por ejemplo 1.0.1 y v1.0.1
-val appVersion = providers.gradleProperty("appVersion").getOrElse("1.0.5")
+val appVersion = providers.gradleProperty("appVersion").getOrElse("1.0.6")
 val appVersionCode = appVersion.split(".").map(String::toInt).let { (major, minor, patch) ->
     major * 10_000 + minor * 100 + patch
 }
