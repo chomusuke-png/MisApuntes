@@ -1,5 +1,11 @@
 package com.estudia.app.ui.pdf
 
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.gestures.scrollable
+import androidx.compose.foundation.gestures.rememberScrollableState
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.Orientation
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -63,8 +69,8 @@ import com.estudia.app.ui.components.rememberAppBarVisibility
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateCentroidSize
 import androidx.compose.foundation.gestures.calculatePan
-import androidx.compose.ui.layout.onPlaced
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.horizontalScroll
@@ -225,8 +231,18 @@ private fun DrawScope.drawReadBox(box: Box, alpha: Float) {
 private val NOTE_PULSE = ComposeColor(0xFFD25D8C)
 
 /** desplazamiento horizontal que se aplica cuando la lista ya tiene su ancho nuevo */
-private class PendingScroll {
-    var x: Float? = null
+/**
+ * desplazamiento horizontal con zoom. Con el de Compose el ancho nuevo recien se conocia al medir,
+ * y el x llegaba un cuadro despues que el zoom: la pagina temblaba de lado al pellizcar. Aca el maximo se calcula
+ * del zoom, asi x y zoom cambian en el mismo cuadro
+ */
+private class HorizontalPan {
+    var x by mutableFloatStateOf(0f)
+    var max = 0f
+
+    fun set(value: Float) {
+        x = value.coerceIn(0f, max)
+    }
 }
 
 /** radio del borrador en dp */
@@ -493,8 +509,12 @@ fun PdfViewerScreen(
 
     var scale by remember { mutableFloatStateOf(1f) }
     val listState = rememberLazyListState()
-    val hScroll = rememberScrollState()
-    val pendingX = remember { PendingScroll() }
+    val hPan = remember { HorizontalPan() }
+    val panState = rememberScrollableState { delta ->
+        val old = hPan.x
+        hPan.set(old - delta)
+        old - hPan.x
+    }
     val snackbar = remember { SnackbarHostState() }
     var menu by remember { mutableStateOf(false) }
 
@@ -681,26 +701,33 @@ fun PdfViewerScreen(
                         val layout = PdfLayout(pages, size.width.toFloat(), size.height.toFloat(), 8.dp.toPx(), 8.dp.toPx())
                         // la lista recien aplica la posicion pedida en el siguiente cuadro, mientras tanto se sigue desde aca
                         var view: PdfView? = null
+                        var lock: GestureLock? = null
                         do {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             if (event.changes.count { it.pressed } >= 2) {
+                                val gesture = lock ?: GestureLock(viewConfiguration.touchSlop).also { lock = it }
+                                val pan = event.calculatePan()
+                                val (zoomChange, dx, dy) = gesture.filter(event.calculateZoom(), pan.x, pan.y, event.calculateCentroidSize())
+                                // los dedos ya son del zoom aunque todavia no se decida el gesto: la lista no debe moverse
+                                event.changes.forEach { it.consume() }
+                                if (zoomChange == 1f && dx == 0f && dy == 0f) continue
                                 val current = view ?: PdfView(
                                     listState.firstVisibleItemIndex,
                                     listState.firstVisibleItemScrollOffset.toFloat(),
                                     scale,
-                                    hScroll.value.toFloat(),
+                                    hPan.x,
                                 )
                                 val centroid = event.calculateCentroid()
-                                val pan = event.calculatePan()
-                                val next = layout.zoom(current, event.calculateZoom(), centroid.x, centroid.y, pan.x, pan.y)
+                                val next = layout.zoom(current, zoomChange, centroid.x, centroid.y, dx, dy)
                                 listState.requestScrollToItem(next.index, next.offset.roundToInt())
                                 // con otro zoom el ancho cambia recien al medir, y el desplazamiento se limitaria al ancho viejo
-                                if (next.scale == scale) hScroll.dispatchRawDelta(next.x - hScroll.value) else pendingX.x = next.x
+                                hPan.max = size.width * (next.scale - 1f)
+                                hPan.set(next.x)
                                 scale = next.scale
                                 view = next
-                                event.changes.forEach { it.consume() }
                             } else {
                                 view = null
+                                lock = null
                             }
                         } while (event.changes.any { it.pressed })
                     }
@@ -718,17 +745,21 @@ fun PdfViewerScreen(
                         val bucket = (scale * 2).roundToInt().coerceIn(2, 6) / 2f
                         (maxWidth.toPx() * bucket).roundToInt().coerceAtMost(3000)
                     }
-                    Box(Modifier.fillMaxSize().horizontalScroll(hScroll, enabled = !tool.draws)) {
+                    hPan.max = with(density) { maxWidth.toPx() } * (scale - 1f)
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .clipToBounds()
+                            .scrollable(panState, Orientation.Horizontal, enabled = !tool.draws)
+                    ) {
                         LazyColumn(
                             state = listState,
                             userScrollEnabled = !tool.draws,
                             modifier = Modifier
+                                .offset { IntOffset(-hPan.x.coerceIn(0f, hPan.max).roundToInt(), 0) }
+                                .wrapContentWidth(Alignment.Start, unbounded = true)
                                 .width(pageWidth)
-                                .fillMaxHeight()
-                                .onPlaced {
-                                    pendingX.x?.let { hScroll.dispatchRawDelta(it - hScroll.value) }
-                                    pendingX.x = null
-                                },
+                                .fillMaxHeight(),
                             contentPadding = PaddingValues(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
@@ -771,8 +802,9 @@ fun PdfViewerScreen(
                         val page = n.page.coerceIn(0, pages.lastIndex)
                         val pageHeightPx = pageWidthPx * pages[page]
                         listState.animateScrollToItem(page, (n.y * pageHeightPx - viewportPx / 3).roundToInt().coerceAtLeast(0))
-                        if (hScroll.maxValue > 0) {
-                            hScroll.animateScrollTo((n.x * pageWidthPx - viewportWidthPx / 2).roundToInt().coerceIn(0, hScroll.maxValue))
+                        if (hPan.max > 0) {
+                            val target = (n.x * pageWidthPx - viewportWidthPx / 2).coerceIn(0f, hPan.max)
+                            panState.animateScrollBy(hPan.x - target)
                         }
                         pulse = n.id to System.nanoTime()
                     }
@@ -782,12 +814,12 @@ fun PdfViewerScreen(
                     }
                     if (pages.size > 1) {
                         // Posición como "página + fracción de página", sobre las páginas que pueden quedar arriba
-                        val scrollScope = rememberCoroutineScope()
                         val fraction by remember(pages.size) {
                             derivedStateOf {
                                 val info = listState.layoutInfo
                                 val first = info.visibleItemsInfo.firstOrNull() ?: return@derivedStateOf 0f
-                                val itemSize = first.size.coerceAtLeast(1)
+                                // con el espacio entre paginas, igual que targetFor: si no, al soltar la barra salta
+                                val itemSize = (first.size + info.mainAxisItemSpacing).coerceAtLeast(1)
                                 val viewportItems = (info.viewportEndOffset - info.viewportStartOffset).toFloat() / itemSize
                                 val maxStart = (pages.size - viewportItems).coerceAtLeast(1f)
                                 val position = first.index + (-first.offset).toFloat() / itemSize
@@ -796,7 +828,7 @@ fun PdfViewerScreen(
                         }
                         fun targetFor(f: Float): Pair<Int, Int> {
                             val info = listState.layoutInfo
-                            val itemSize = info.visibleItemsInfo.firstOrNull()?.size?.coerceAtLeast(1) ?: 1
+                            val itemSize = ((info.visibleItemsInfo.firstOrNull()?.size ?: 0) + info.mainAxisItemSpacing).coerceAtLeast(1)
                             val viewportItems = (info.viewportEndOffset - info.viewportStartOffset).toFloat() / itemSize
                             val position = f * (pages.size - viewportItems).coerceAtLeast(0f)
                             val index = position.toInt().coerceIn(0, pages.lastIndex)
@@ -805,10 +837,12 @@ fun PdfViewerScreen(
                         FastScrollbar(
                             fraction = fraction,
                             onScrollTo = { f ->
+                                // se aplica en el proximo cuadro; al arrastrar rapido no se amontonan desplazamientos pendientes
                                 val (index, offset) = targetFor(f)
-                                scrollScope.launch { listState.scrollToItem(index, offset) }
+                                listState.requestScrollToItem(index, offset)
                             },
                             label = { f -> "Página ${targetFor(f).first + 1} / ${pages.size}" },
+                            onDragging = { bar.frozen = it },
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
                                 .padding(vertical = 8.dp),

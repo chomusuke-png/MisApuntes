@@ -648,6 +648,7 @@ fun EditorScreen(
                         val n = pages.pageAt(f * scrollMax)
                         if (n > 0) "Página $n de ${pages.count}" else "${(f * 100).roundToInt()} %"
                     },
+                    onDragging = { bar.frozen = it },
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(top = 8.dp, bottom = 88.dp),

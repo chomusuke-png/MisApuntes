@@ -50,6 +50,9 @@ class AppBarVisibility {
     /** mientras es true, desplazarse no trae de vuelta el appbar. El boton para mostrarlo sigue funcionando */
     var keepHidden = false
 
+    /** mientras se arrastra la barra de desplazamiento, el appbar queda como esta: si se movia, cambiaba el alto bajo el dedo */
+    var frozen = false
+
     fun show() = set(true)
 
     fun hide() = set(false)
@@ -66,7 +69,7 @@ class AppBarVisibility {
         val delta = position - (last ?: position)
         last = position
         // el contenido avisa su posicion tambien al cambiar de alto, por ejemplo al abrir el teclado
-        if (delta == 0f || keepHidden || SystemClock.uptimeMillis() < quietUntil) return
+        if (delta == 0f || keepHidden || frozen || SystemClock.uptimeMillis() < quietUntil) return
         if (position <= 0f) return show()
         travelled = if (delta > 0 == travelled > 0) travelled + delta else delta
         if (travelled > THRESHOLD) hide() else if (travelled < -THRESHOLD) show()

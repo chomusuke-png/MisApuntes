@@ -64,3 +64,56 @@ class PdfLayout(
         const val MAX_SCALE = 4f
     }
 }
+
+/**
+ * separa el pellizco del arrastre con dos dedos: lo primero que se nota decide el gesto y el otro queda frenado
+ * si el otro movimiento sigue y pasa un margen amplio, se sueltan los dos. Una por gesto; slop es el umbral del sistema, en px
+ */
+class GestureLock(private val slop: Float) {
+    enum class Mode { NONE, ZOOM, PAN, BOTH }
+
+    var mode = Mode.NONE
+        private set
+
+    private var zoom = 1f
+    private var panX = 0f
+    private var panY = 0f
+
+    /** cambio de zoom y arrastre de este evento ya filtrados. span es la distancia promedio de los dedos al centro */
+    fun filter(zoomChange: Float, dx: Float, dy: Float, span: Float): Triple<Float, Float, Float> {
+        zoom *= zoomChange
+        panX += dx
+        panY += dy
+        // el zoom en px: cuanto se abrieron o cerraron los dedos
+        val zoomPx = kotlin.math.abs(zoom - 1f) * span
+        val panPx = kotlin.math.hypot(panX, panY)
+        when (mode) {
+            Mode.NONE -> {
+                if (maxOf(zoomPx, panPx) < slop) return NOTHING
+                mode = if (zoomPx >= panPx) Mode.ZOOM else Mode.PAN
+                reset()
+                return NOTHING
+            }
+            Mode.ZOOM -> if (panPx > slop * UNLOCK) mode = Mode.BOTH
+            Mode.PAN -> if (zoomPx > slop * UNLOCK) mode = Mode.BOTH
+            Mode.BOTH -> {}
+        }
+        // lo que se freno antes de soltarse no se aplica de golpe
+        return when (mode) {
+            Mode.ZOOM -> Triple(zoomChange, 0f, 0f)
+            Mode.PAN -> Triple(1f, dx, dy)
+            else -> Triple(zoomChange, dx, dy)
+        }
+    }
+
+    private fun reset() {
+        zoom = 1f
+        panX = 0f
+        panY = 0f
+    }
+
+    private companion object {
+        val NOTHING = Triple(1f, 0f, 0f)
+        const val UNLOCK = 6f
+    }
+}

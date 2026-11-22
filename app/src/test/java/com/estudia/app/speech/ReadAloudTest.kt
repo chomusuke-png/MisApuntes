@@ -97,4 +97,49 @@ class ReadAloudTest {
         assertEquals("1,25×", speedLabel(1.25f))
         assertEquals("0,5×", speedLabel(0.5f))
     }
+
+    /** motor que no suena: guarda lo que se le pidio leer y deja avisar palabras a mano */
+    private class FakeEngine : VoiceEngine {
+        val spoken = mutableListOf<Pair<String, Float>>()
+        var listener: VoiceEngine.Listener? = null
+
+        override fun init(onResult: (String?) -> Unit) = onResult(null)
+
+        override fun speak(text: String, speed: Float, listener: VoiceEngine.Listener) {
+            spoken += text to speed
+            this.listener = listener
+        }
+
+        override fun stop() {}
+
+        override fun shutdown() {}
+    }
+
+    @Test
+    fun changingTheSpeedWhileReadingContinuesFromTheCurrentWord() {
+        val engine = FakeEngine()
+        val reader = ReadAloud(engine, 1f)
+        val words = mutableListOf<Pair<Int, Int>>()
+        reader.onWord = { _, start, end -> words += start to end }
+        reader.start(listOf("Uno dos tres cuatro"), 0)
+        engine.listener!!.onWord(8, 12)
+        reader.speed = 1.5f
+        assertEquals("tres cuatro" to 1.5f, engine.spoken.last())
+        // las palabras siguen con posiciones del trozo entero
+        engine.listener!!.onWord(5, 11)
+        assertEquals(13 to 19, words.last())
+    }
+
+    @Test
+    fun changingTheSpeedWhilePausedOnlyAppliesOnResume() {
+        val engine = FakeEngine()
+        val reader = ReadAloud(engine, 1f)
+        reader.start(listOf("Uno dos tres"), 0)
+        engine.listener!!.onWord(4, 7)
+        reader.pause()
+        reader.speed = 0.5f
+        assertEquals(1, engine.spoken.size)
+        reader.resume()
+        assertEquals("dos tres" to 0.5f, engine.spoken.last())
+    }
 }

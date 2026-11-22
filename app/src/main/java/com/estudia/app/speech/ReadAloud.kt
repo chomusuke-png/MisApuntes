@@ -94,7 +94,16 @@ class ReadAloud(private val engine: VoiceEngine, speed: Float) {
     var onWord: (segment: Int, start: Int, end: Int) -> Unit = { _, _, _ -> }
     var onFinish: () -> Unit = {}
 
+    /** al cambiarla mientras se lee, se sigue desde la palabra actual con la nueva velocidad */
     var speed = speed
+        set(value) {
+            if (field == value) return
+            field = value
+            if (active && playing && ready == true) speakCurrent(wordStart)
+        }
+
+    // donde empieza la ultima palabra dicha del trozo actual, para retomar desde ahi
+    private var wordStart = 0
 
     // cada vez que se corta la lectura cambia, asi los avisos de lo que se estaba leyendo se ignoran
     private var session = 0
@@ -116,6 +125,7 @@ class ReadAloud(private val engine: VoiceEngine, speed: Float) {
         if (segments.isEmpty()) return
         this.segments = segments
         index = from.coerceIn(0, segments.lastIndex)
+        wordStart = 0
         active = true
         playing = ready != false
         if (playing) speakCurrent()
@@ -131,11 +141,11 @@ class ReadAloud(private val engine: VoiceEngine, speed: Float) {
         engine.stop()
     }
 
-    /** la voz no puede seguir desde la mitad, asi que se retoma desde el inicio del trozo */
+    /** se retoma desde la ultima palabra dicha; si la voz no avisa palabras, desde el inicio del trozo */
     fun resume() {
         if (!active || ready == false) return
         playing = true
-        speakCurrent()
+        speakCurrent(wordStart)
     }
 
     fun next() = jump(index + 1)
@@ -145,6 +155,7 @@ class ReadAloud(private val engine: VoiceEngine, speed: Float) {
     private fun jump(to: Int) {
         if (to !in segments.indices) return
         index = to
+        wordStart = 0
         if (playing) speakCurrent() else onSegment(index)
     }
 
@@ -163,16 +174,22 @@ class ReadAloud(private val engine: VoiceEngine, speed: Float) {
         engine.shutdown()
     }
 
-    private fun speakCurrent() {
+    /** lee el trozo actual desde el caracter from. Las palabras se avisan con posiciones del trozo entero */
+    private fun speakCurrent(from: Int = 0) {
         session++
         engine.stop()
-        onSegment(index)
+        val i = index
+        val begin = from.coerceIn(0, segments[i].length)
+        // retomar a mitad de trozo no vuelve a marcarlo: quedaria la marca de la palabra donde iba
+        if (begin == 0) onSegment(i)
         if (ready != true) return
         val s = session
-        val i = index
-        engine.speak(segments[i], speed, object : VoiceEngine.Listener {
+        wordStart = begin
+        engine.speak(segments[i].substring(begin), speed, object : VoiceEngine.Listener {
             override fun onWord(start: Int, end: Int) {
-                if (s == session && playing) onWord(i, start, end)
+                if (s != session || !playing) return
+                wordStart = begin + start
+                onWord(i, begin + start, begin + end)
             }
 
             override fun onDone() {
@@ -191,6 +208,7 @@ class ReadAloud(private val engine: VoiceEngine, speed: Float) {
     private fun advance() {
         if (index < segments.lastIndex) {
             index++
+            wordStart = 0
             speakCurrent()
         } else {
             stop()

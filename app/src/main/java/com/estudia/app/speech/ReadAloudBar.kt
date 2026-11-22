@@ -22,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,7 +48,9 @@ fun rememberReadAloud(): ReadAloud {
     val reader = remember(natural) {
         ReadAloud(natural?.let { NaturalVoiceEngine(app.naturalVoices, it) } ?: SystemVoice(context), settings.readSpeed)
     }
-    reader.speed = settings.readSpeed
+    // fuera de la composicion: cambiar la velocidad mientras lee reinicia la voz
+    val speed = settings.readSpeed
+    LaunchedEffect(reader, speed) { reader.speed = speed }
     DisposableEffect(reader) { onDispose { reader.shutdown() } }
     return reader
 }
